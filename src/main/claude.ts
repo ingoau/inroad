@@ -1,6 +1,18 @@
-import { createSdkMcpServer, query, tool, type Options, type SDKMessage } from '@anthropic-ai/claude-agent-sdk'
-import { mkdirSync } from 'node:fs'
+import {
+  createSdkMcpServer,
+  query,
+  tool,
+  type Options,
+  type SDKMessage,
+  type SDKUserMessage,
+} from '@anthropic-ai/claude-agent-sdk'
+import { spawn } from 'node:child_process'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { z } from 'zod'
+import { mcpServerKey } from '../shared/api'
+import { claudeAuthenticatedServers, claudeNeedsAuthServers, claudeCredentialsFile, claudeNeedsAuthFile } from './mcp'
 import type {
   ChatRequest,
   ChatResult,
@@ -12,6 +24,9 @@ import type {
   EmailComment,
   EmailGuidance,
   EventLookupResult,
+  LeadSuggestionsRequest,
+  McpAuthStatus,
+  McpServer,
   ParsedOrganisation,
   ProposedEdit,
   ResearchRequest,
@@ -33,16 +48,57 @@ type Emit = (p: ClaudeProgress) => void
 // Set once at startup (kept free of Electron imports so scripts can test this module).
 // executable: set in packaged builds, where the SDK's bundled binary is unpacked
 // next to the asar archive; otherwise the SDK finds it itself.
-const config: { workspace: string; clientApp: string; executable?: string } = { workspace: '', clientApp: 'inroad' }
-export function configureClaude(c: typeof config) {
+// openExternal: injected by the main process, used to open the browser during
+// MCP OAuth sign-in (keeps Electron out of this module).
+const config: { workspace: string; clientApp: string; executable?: string; openExternal?: (url: string) => void; mcpServers: McpServer[] } = {
+  workspace: '',
+  clientApp: 'inroad',
+  mcpServers: [],
+}
+export function configureClaude(c: { workspace: string; clientApp: string; executable?: string; openExternal?: (url: string) => void }) {
   Object.assign(config, c)
   mkdirSync(c.workspace, { recursive: true })
+}
+
+// The MCP servers the user enabled in Settings, refreshed before each run.
+export function setMcpServers(servers: McpServer[]) {
+  config.mcpServers = servers
+}
+
+const toRecord = (pairs: { key: string; value: string }[]) =>
+  Object.fromEntries(pairs.filter((p) => p.key.trim()).map((p) => [p.key.trim(), p.value]))
+
+// The enabled servers as the SDK's mcpServers record, plus the allowedTools
+// patterns (`mcp__<server>`) that let the agent call every tool they expose.
+function mcpConfig() {
+  const servers: NonNullable<Options['mcpServers']> = {}
+  for (const s of config.mcpServers) {
+    if (!s.enabled || !s.name.trim()) continue
+    const key = mcpServerKey(s)
+    if (s.transport === 'stdio') {
+      if (!s.command.trim()) continue
+      const env = toRecord(s.env)
+      servers[key] = { type: 'stdio', command: s.command.trim(), args: s.args.filter((a) => a.trim()), ...(Object.keys(env).length ? { env } : {}) }
+    } else {
+      if (!s.url.trim()) continue
+      const headers = toRecord(s.headers)
+      servers[key] = { type: s.transport, url: s.url.trim(), ...(Object.keys(headers).length ? { headers } : {}) }
+    }
+  }
+  const keys = Object.keys(servers)
+  return { servers, keys, allow: keys.map((k) => `mcp__${k}`) }
 }
 
 // Each run gets an empty working folder and none of the user's own Claude Code
 // settings, memory or skills, so it only ever has the tools listed here.
 function baseOptions(apiKey: string | undefined, opts: Partial<Options>): Options {
   const cwd = config.workspace
+  // User-added MCP servers load only for tasks that already allow tools; the
+  // tool-less text jobs don't need them (and paying to start them is wasteful).
+  const permitsTools = !!opts.allowedTools || !!opts.canUseTool
+  const mcp = permitsTools ? mcpConfig() : { servers: {}, keys: [], allow: [] }
+  const mcpServers = { ...mcp.servers, ...(opts.mcpServers ?? {}) }
+  const allowedTools = opts.allowedTools ? [...opts.allowedTools, ...mcp.allow] : opts.allowedTools
   return {
     model: MODEL,
     cwd,
@@ -60,6 +116,8 @@ function baseOptions(apiKey: string | undefined, opts: Partial<Options>): Option
       CLAUDE_AGENT_SDK_CLIENT_APP: config.clientApp,
     },
     ...opts,
+    ...(Object.keys(mcpServers).length ? { mcpServers } : {}),
+    ...(allowedTools ? { allowedTools } : {}),
   }
 }
 
@@ -450,6 +508,9 @@ const asDetails = (facts: { label: string; value: string }[]) =>
 export async function lookupEvent(apiKey: string | undefined, req: EventLookupRequest, emit: Emit): Promise<Result<EventLookupResult>> {
   return guard(async () => {
     emit({ jobId: req.jobId, kind: 'step', text: `Looking for “${req.name}”` })
+    // Servers the user added themselves are trusted in full; the read-only
+    // filter below only guards the account's claude.ai connectors.
+    const userMcp = mcpConfig().keys
     const result = await run(
       `Event: ${req.name}${req.hint ? `\nWhat the user added: ${req.hint}` : ''}`,
       baseOptions(apiKey, {
@@ -466,7 +527,9 @@ ${EVENT_EXCLUDE}`,
         permissionMode: 'default',
         settings: { disableClaudeAiConnectors: false },
         canUseTool: async (toolName, input) =>
-          ['WebSearch', 'WebFetch', 'ToolSearch'].includes(toolName) || (toolName.startsWith('mcp__') && isReadOnlyTool(toolName.split('__').at(-1) ?? ''))
+          ['WebSearch', 'WebFetch', 'ToolSearch'].includes(toolName) ||
+          userMcp.some((k) => toolName.startsWith(`mcp__${k}__`)) ||
+          (toolName.startsWith('mcp__') && isReadOnlyTool(toolName.split('__').at(-1) ?? ''))
             ? { behavior: 'allow', updatedInput: input }
             : { behavior: 'deny', message: 'Inroad only lets you read and search here, not change anything.' },
         effort: 'medium',
@@ -565,6 +628,55 @@ For each, keep any website they gave, and put everything they said about it in "
   })
 }
 
+// ------------------------------------------------------------- suggest leads
+
+// Proposes organisations to reach out to, from the folder's event info and the
+// campaign's notes. Web search confirms they exist and finds their website.
+export async function suggestLeads(apiKey: string | undefined, req: LeadSuggestionsRequest, emit: Emit): Promise<Result<ParsedOrganisation[]>> {
+  return guard(async () => {
+    emit({ jobId: req.jobId, kind: 'step', text: 'Thinking of leads' })
+    const count = req.count ?? 8
+    const prompt = [
+      `<event_info>\n${req.eventInfo || '(none)'}\n</event_info>`,
+      `<campaign_notes>\n${req.campaignNotes || '(none)'}\n</campaign_notes>`,
+      req.emailFormat?.trim() ? `<email_format>\n${req.emailFormat.trim()}\n</email_format>` : '',
+      req.existing?.length ? `<already_contacting>\n${req.existing.map((n) => `- ${n}`).join('\n')}\n</already_contacting>` : '',
+      `Suggest up to ${count} organisations.`,
+    ]
+      .filter(Boolean)
+      .join('\n\n')
+    const result = await run(
+      prompt,
+      baseOptions(apiKey, {
+        systemPrompt: `You suggest organisations for someone running an event to reach out to. Use what the event is (the event info) and what this campaign is asking for (the campaign notes) to propose real organisations that would be a good fit.
+
+Search the web to confirm each organisation exists, find its website, and pick up anything specific worth mentioning (a past sponsorship, a relevant programme, a local tie). Prefer a mix of strong, plausible fits over a long list. Don't suggest anything already in "already_contacting".
+
+For each, give the organisation's name (as you'd search for it), its website domain, and a "note": one short instruction on why it fits or what to mention when writing to them. If you can't confirm an organisation is real, leave it out. Don't invent websites.`,
+        tools: ['WebSearch', 'WebFetch'],
+        allowedTools: ['WebSearch', 'WebFetch'],
+        effort: 'medium',
+        maxTurns: 30,
+        ...structured(OrganisationsSchema),
+      }),
+      // Each search / page read becomes a progress line in the UI.
+      (m) => {
+        if (m.type !== 'assistant') return
+        for (const block of m.message.content) {
+          if (block.type !== 'tool_use') continue
+          const input = block.input as { query?: string; url?: string }
+          if (block.name === 'WebSearch' && input.query) emit({ jobId: req.jobId, kind: 'step', text: `Searched “${input.query}”` })
+          if (block.name === 'WebFetch' && input.url) emit({ jobId: req.jobId, kind: 'step', text: `Read ${input.url.replace(/^https?:\/\//, '')}` })
+        }
+      },
+    )
+    return parseOutput(OrganisationsSchema, result.structured_output)
+      .organisations.map((o) => ({ name: o.name.trim(), website: o.website.trim(), note: o.note.trim() }))
+      .filter((o) => o.name)
+      .slice(0, count)
+  })
+}
+
 // ------------------------------------------------------------- connection
 
 // A tiny request to check Claude is reachable with the current sign-in or key.
@@ -572,5 +684,185 @@ export async function testClaude(apiKey: string | undefined): Promise<Result<{ v
   return guard(async () => {
     await run('Reply with just: OK', baseOptions(apiKey, { tools: [], effort: 'low', maxTurns: 1 }))
     return { via: apiKey ? ('api-key' as const) : ('claude-login' as const) }
+  })
+}
+
+// ------------------------------------------------------------------ MCP auth
+
+// Claude Code stores MCP OAuth tokens in ~/.claude/.credentials.json. Inroad
+// shares that store, so a sign-in here also signs in the terminal (and vice
+// versa). Sign-in drives the SDK's URL elicitation: open the browser, accept,
+// then reconnect until the server reports connected.
+
+const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+const AUTH_TIMEOUT_MS = 5 * 60_000
+
+// One entry in the SDK's mcpServers record (derived, so we don't reach for an
+// unexported type).
+type CliMcpServer = NonNullable<Options['mcpServers']>[string]
+
+// The SDK config for one remote server. alwaysLoad makes startup wait for the
+// connection, so an unauthenticated server elicits during init, not mid-run.
+function remoteServerConfig(s: McpServer, alwaysLoad: boolean): CliMcpServer {
+  const headers = toRecord(s.headers)
+  return {
+    type: s.transport,
+    url: s.url.trim(),
+    ...(Object.keys(headers).length ? { headers } : {}),
+    ...(alwaysLoad ? { alwaysLoad: true } : {}),
+  } as CliMcpServer
+}
+
+// The user-enabled remote servers and their stored sign-in state.
+export function mcpAuthStatus(): McpAuthStatus[] {
+  const authed = claudeAuthenticatedServers()
+  const needs = claudeNeedsAuthServers()
+  return config.mcpServers
+    .filter((s) => s.transport !== 'stdio' && !!s.url.trim())
+    .map((s) => {
+      const name = s.name.trim().toLowerCase()
+      if (authed.has(name)) return { id: s.id, state: 'connected' as const }
+      if (needs.has(name)) return { id: s.id, state: 'needs-auth' as const }
+      return { id: s.id, state: 'unknown' as const }
+    })
+}
+
+// Reads one server's live status from a running query; 'pending'/'disabled'
+// read as unknown so the UI keeps waiting rather than calling them done.
+async function liveStatus(q: ReturnType<typeof query>, key: string, id: string): Promise<McpAuthStatus> {
+  try {
+    const status = (await q.mcpServerStatus()).find((s) => s.name === key)
+    if (!status) return { id, state: 'unknown' }
+    if (status.status === 'connected') return { id, state: 'connected' }
+    if (status.status === 'needs-auth') return { id, state: 'needs-auth' }
+    if (status.status === 'failed') return { id, state: 'failed', detail: status.error }
+    return { id, state: 'unknown' }
+  } catch (err) {
+    return { id, state: 'unknown', detail: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+// Signs in one remote server, opening the browser when the server asks. Uses a
+// throwaway query holding only this server, then closes it.
+export async function authenticateMcp(apiKey: string | undefined, server: McpServer): Promise<Result<McpAuthStatus>> {
+  return guard(async () => {
+    if (server.transport === 'stdio') throw new Error('Local servers don’t use OAuth sign-in.')
+    const key = mcpServerKey(server)
+    const mcpServers: Record<string, CliMcpServer> = { [key]: remoteServerConfig(server, true) }
+
+    // Streaming input keeps the session (and its connection attempts) alive
+    // until we release it, so the browser flow isn't cut short.
+    let release!: () => void
+    const held = new Promise<void>((resolve) => (release = resolve))
+    async function* input(): AsyncIterable<SDKUserMessage> {
+      yield { type: 'user', parent_tool_use_id: null, message: { role: 'user', content: 'Connect to the MCP server, then reply OK.' } }
+      await held
+    }
+
+    const q = query({
+      prompt: input(),
+      options: baseOptions(apiKey, {
+        mcpServers,
+        tools: [],
+        effort: 'low',
+        maxTurns: 1,
+        onElicitation: async (req) => {
+          if (req.mode === 'url' && req.url && config.openExternal) {
+            config.openExternal(req.url)
+            return { action: 'accept' }
+          }
+          return { action: 'decline' }
+        },
+      }),
+    })
+
+    // Drive the session in the background while we poll for the connection.
+    const consumed = (async () => {
+      try {
+        for await (const message of q) {
+          if (message.type === 'system' && message.subtype === 'elicitation_complete') break
+        }
+      } catch {
+        // The session ending is fine; the polling below decides the outcome.
+      }
+    })()
+
+    try {
+      let status = await liveStatus(q, key, server.id)
+      const deadline = Date.now() + AUTH_TIMEOUT_MS
+      while (status.state !== 'connected' && Date.now() < deadline) {
+        if (status.state === 'failed') break
+        // Nudge a server the CLI has flagged; a fresh connect can re-elicit.
+        try {
+          await q.reconnectMcpServer(key)
+        } catch {
+          // Not connected yet; the next poll will tell us more.
+        }
+        await sleep(2000)
+        status = await liveStatus(q, key, server.id)
+      }
+      if (status.state !== 'connected') {
+        return status.state === 'failed'
+          ? status
+          : { id: server.id, state: 'needs-auth' as const, detail: 'Sign-in wasn’t completed in the browser.' }
+      }
+      return status
+    } finally {
+      release()
+      q.close()
+      await consumed.catch(() => {})
+    }
+  })
+}
+
+// Removes this server's stored OAuth token (and its needs-auth flag), falling
+// back to the CLI when there's no token file to edit.
+export async function logoutMcp(server: McpServer): Promise<Result<McpAuthStatus>> {
+  return guard(async () => {
+    const name = server.name.trim()
+    const nameLc = name.toLowerCase()
+    let edited = false
+    try {
+      const creds = JSON.parse(readFileSync(claudeCredentialsFile(), 'utf8'))
+      if (isObject(creds) && isObject(creds.mcpOAuth)) {
+        for (const [k, entry] of Object.entries(creds.mcpOAuth)) {
+          const entryName = isObject(entry) ? String(entry.serverName ?? '').toLowerCase() : ''
+          if (entryName === nameLc || k.toLowerCase().startsWith(`${nameLc}|`)) {
+            delete creds.mcpOAuth[k]
+            edited = true
+          }
+        }
+        if (edited) writeFileSync(claudeCredentialsFile(), JSON.stringify(creds, null, 2), { mode: 0o600 })
+      }
+    } catch {
+      // No credentials file, or unreadable: try the CLI below.
+    }
+    try {
+      const cache = JSON.parse(readFileSync(claudeNeedsAuthFile(), 'utf8'))
+      if (isObject(cache)) {
+        const hit = Object.keys(cache).find((k) => k.toLowerCase() === nameLc)
+        if (hit) {
+          delete cache[hit]
+          writeFileSync(claudeNeedsAuthFile(), JSON.stringify(cache))
+        }
+      }
+    } catch {
+      // No needs-auth cache: nothing to clear.
+    }
+    if (!edited) await claudeMcpLogoutCli(name)
+    return { id: server.id, state: 'unknown' as const }
+  })
+}
+
+// Runs the bundled `claude mcp logout <name>` when we couldn't edit the store.
+function claudeMcpLogoutCli(name: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(config.executable || 'claude', ['mcp', 'logout', name], { cwd: config.workspace, env: process.env })
+    let stderr = ''
+    child.stderr.setEncoding('utf8')
+    child.stderr.on('data', (chunk: string) => (stderr += chunk))
+    child.on('error', reject)
+    child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(stderr.trim() || `claude mcp logout exited with code ${code}.`))))
   })
 }

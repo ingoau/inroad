@@ -6,6 +6,7 @@ import { Check, CircleAlert, Loader2, MessageCircleQuestion, Sparkles } from 'lu
 import type { EventQuestion } from '../../../shared/api'
 import { useEffect, useRef, useState } from 'react'
 import { useAgentName } from '../agent'
+import { notifyDesktop } from '../desktopNotify'
 
 // The parts of a folder these fields edit.
 export interface FolderInfo {
@@ -38,15 +39,21 @@ export function FolderFields({ folder, onChange, autoFocus }: { folder: FolderIn
 
   const lookUp = async () => {
     if (!window.api || !folder.name.trim()) return
+    const name = folder.name.trim()
     job.current = crypto.randomUUID()
     setBusy(true)
     setSteps([])
     setQuestions([])
     setError('')
-    const res = await window.api.claude.lookupEvent({ jobId: job.current, name: folder.name.trim(), hint: folder.notes.trim() || undefined })
+    const res = await window.api.claude.lookupEvent({ jobId: job.current, name, hint: folder.notes.trim() || undefined })
     setBusy(false)
     if (!res.ok) return setError(res.error)
     setQuestions(res.value.questions.map((q) => ({ ...q, answer: '' })))
+    if (res.value.questions.length)
+      notifyDesktop(
+        `Questions about ${name}`,
+        `${agent} has ${res.value.questions.length === 1 ? 'one question' : `${res.value.questions.length} questions`} for you.`,
+      )
     // Keep anything the user had written, above what Claude found.
     const mine = latest.current.notes.trim()
     onChange({ ...latest.current, notes: mine ? `${mine}\n\n${res.value.details}` : res.value.details })

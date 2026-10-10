@@ -30,8 +30,10 @@ import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from
 import { usePanelRef } from 'react-resizable-panels'
 import { toast } from 'sonner'
 import { AgentProvider, agentName } from './agent'
+import { notifyDesktop, syncDesktopNotify } from './desktopNotify'
 import { CommandPalette, ShortcutsDialog, type PaletteCommand } from './components/CommandPalette'
 import { AddCompaniesDialog } from './components/AddCompaniesDialog'
+import { AgentQuestions } from './components/AgentQuestions'
 import { Editor } from './components/Editor'
 import { activeChat, RightPanel, type Tab } from './components/RightPanel'
 import type { TrashItem } from './components/TrashView'
@@ -139,6 +141,11 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     window.api?.settings.get().then(setSettings)
   }, [])
 
+  // Desktop notifications follow the saved setting wherever it changes.
+  useEffect(() => {
+    syncDesktopNotify(!!settings?.desktopNotifications)
+  }, [settings?.desktopNotifications])
+
   // Layout. The left sidebar (shadcn Sidebar) collapses to icons on narrower
   // screens and becomes a sheet on phones. The brief/chat panel docks in a
   // resizable group on wide screens and slides over as a sheet otherwise.
@@ -238,15 +245,29 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
   const research = async (p: Prospect) => {
     const pid = p.id
     researching.current.add(pid)
-    update(pid, (q) => ({ ...q, status: 'researching', progress: [], error: undefined }))
+    update(pid, (q) => ({ ...q, status: 'researching', progress: [], subagents: [], error: undefined }))
     const jobId = crypto.randomUUID()
-    jobs.current.set(jobId, (e) => e.kind === 'step' && update(pid, (q) => ({ ...q, progress: [...q.progress, e.text] })))
+    jobs.current.set(jobId, (e) => {
+      if (e.kind === 'step') update(pid, (q) => ({ ...q, progress: [...q.progress, e.text] }))
+      else if (e.kind === 'subagent')
+        update(pid, (q) => {
+          const runs = [...(q.subagents ?? [])]
+          while (runs.length <= e.subagent) runs.push({ label: '', steps: [] })
+          const run = runs[e.subagent]
+          runs[e.subagent] = { ...run, label: e.label, done: e.done, steps: [...run.steps, e.text] }
+          return { ...q, subagents: runs }
+        })
+    })
     const res = window.api
       ? await window.api.claude.research({ jobId, website: p.domain || undefined, ...claudeContext(p) })
       : ({ ok: false, error: 'Research runs in the Inroad desktop app.' } as const)
     jobs.current.delete(jobId)
     researching.current.delete(pid)
-    if (!res.ok) return update(pid, (q) => ({ ...q, status: 'failed', error: res.error }))
+    if (!res.ok) {
+      update(pid, (q) => ({ ...q, status: 'failed', error: res.error }))
+      notifyDesktop(`Research failed: ${p.company}`, res.error)
+      return
+    }
     const { research, draft } = res.value
     const md = normalizeMarkdown(draft.body)
     update(pid, (q) => ({
@@ -261,6 +282,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
       versions: [...q.versions, { id: crypto.randomUUID(), label: `${agent}’s draft`, by: 'claude', at: Date.now(), markdown: md }],
       comments: [...(q.comments ?? []), ...stamp(draft.comments, 'draft')],
     }))
+    notifyDesktop(`Draft ready: ${p.company}`, draft.subject)
   }
   useEffect(() => {
     let free = MAX_CONCURRENT - researching.current.size
@@ -1446,7 +1468,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
       onRestoreVersion={restoreVersion}
       onDeleteVersion={deleteVersion}
       onChange={(patch) => (patch.to ? setRecipients(patch.to) : update(selected.id, (p) => ({ ...p, ...patch })))}
-      onRetry={(website) => update(selected.id, (p) => ({ ...p, status: 'queued', progress: [], error: undefined, domain: website || p.domain }))}
+      onRetry={(website) => update(selected.id, (p) => ({ ...p, status: 'queued', progress: [], subagents: [], error: undefined, domain: website || p.domain }))}
       onSave={save}
       panelTab={rightOpen ? tab : null}
       showPanelButtons={!(rightDocks && rightOpen)}
@@ -1480,6 +1502,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
       <TooltipProvider delayDuration={300}>
         <AgentProvider provider={settings?.aiProvider}>
           <Onboarding onFinish={finishOnboarding} onSkip={() => setOnboarded(true)} settings={settings} onSettings={setSettings} />
+          <AgentQuestions />
         </AgentProvider>
         <Toaster theme={theme} position="bottom-center" />
       </TooltipProvider>
@@ -1616,9 +1639,18 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
         )}
       </SidebarProvider>
 
-      <AddCompaniesDialog open={adding} onOpenChange={setAdding} campaign={campaign} voiceName={voice.name} onAdd={addProspects} />
+      <AddCompaniesDialog
+        open={adding}
+        onOpenChange={setAdding}
+        campaign={campaign}
+        voiceName={voice.name}
+        eventInfo={folder.notes}
+        existing={inCampaign.map((p) => p.company)}
+        onAdd={addProspects}
+      />
       <CommandPalette open={palette} onOpenChange={setPalette} commands={commands} />
       <ShortcutsDialog open={help} onOpenChange={setHelp} />
+      <AgentQuestions />
       <Toaster theme={theme} position="bottom-center" />
       </AgentProvider>
     </TooltipProvider>

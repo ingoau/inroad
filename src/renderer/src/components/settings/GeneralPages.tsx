@@ -12,13 +12,14 @@ import {
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Check, CircleAlert, Loader2, Trash2, TriangleAlert } from 'lucide-react'
+import { Check, ChevronDown, CircleAlert, Loader2, Power, Trash2, TriangleAlert } from 'lucide-react'
 import { useMemo, useState, type ReactNode } from 'react'
 import type { MailSettings, PublicSettings } from '../../../../shared/api'
 import { emailHtml, emailStyleVars, type EmailStyle } from '../../markdown'
 import { globalShortcuts, NAV_SHORTCUTS } from '../CommandPalette'
 import { agentName, useAgentName } from '../../agent'
 import { Keys } from '../hint'
+import { McpServersSection } from './McpServers'
 import { SettingsBlock, SettingsRow, SettingsSection } from './layout'
 
 type Status = { ok: boolean; message: string } | null
@@ -298,14 +299,48 @@ export function EmailStylePage({ style, onChange }: { style: EmailStyle; onChang
 
 // ---------------------------------------------------------------- Agent
 
+// One-click model ids for OpenRouter's routers. opencode model ids are
+// "provider/model-id", and OpenRouter's own ids already start with
+// "openrouter/", so the provider prefix is doubled.
+const MODEL_SUGGESTIONS: [string, string][] = [
+  ['openrouter/openrouter/free', 'OpenRouter free router'],
+  ['openrouter/openrouter/auto', 'OpenRouter auto router'],
+]
+
+function ModelSuggestions({ onPick, disabled }: { onPick: (model: string) => void; disabled: boolean }) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <span className="text-xs text-muted-foreground">Try:</span>
+      {MODEL_SUGGESTIONS.map(([id, label]) => (
+        <button
+          key={id}
+          type="button"
+          title={id}
+          disabled={disabled}
+          onClick={() => onPick(id)}
+          className="rounded-full border px-2.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 export function ClaudePage({ settings, onSaved }: { settings: PublicSettings | null; onSaved: (s: PublicSettings) => void }) {
   const [apiKey, setApiKey] = useState('')
   const [busy, setBusy] = useState(false)
   const [testing, setTesting] = useState(false)
+  const [notifBusy, setNotifBusy] = useState(false)
   const [status, setStatus] = useState<Status>(null)
   const [path, setPath] = useState(settings?.opencode.path ?? '')
   const [model, setModel] = useState(settings?.opencode.model ?? '')
+  const [researchModel, setResearchModel] = useState(settings?.opencode.researchModel ?? '')
+  const [chatModel, setChatModel] = useState(settings?.opencode.chatModel ?? '')
+  const [fallbackModel, setFallbackModel] = useState(settings?.opencode.fallbackModel ?? '')
+  const [subAgentModel, setSubAgentModel] = useState(settings?.opencode.subAgentModel ?? '')
   const [agent, setAgent] = useState(settings?.opencode.agent ?? '')
+  const [showTaskModels, setShowTaskModels] = useState(!!(settings?.opencode.researchModel || settings?.opencode.chatModel))
   const desktop = !!window.api
   const provider = settings?.aiProvider ?? 'claude'
 
@@ -346,11 +381,42 @@ export function ClaudePage({ settings, onSaved }: { settings: PublicSettings | n
     onSaved(await window.api.settings.set({ aiProvider: p }))
   }
 
+  const notifications = !!settings?.desktopNotifications
+
+  // Turning it on also asks the browser for permission, which needs this click
+  // as its user gesture. If it's denied the toggle still saves; notifications
+  // just stay silent.
+  const setNotifications = async (on: boolean) => {
+    if (!window.api) return
+    setNotifBusy(true)
+    try {
+      if (on && typeof Notification !== 'undefined' && Notification.permission === 'default')
+        try {
+          await Notification.requestPermission()
+        } catch {
+          // Unsupported or blocked here; the toggle still saves.
+        }
+      onSaved(await window.api.settings.set({ desktopNotifications: on }))
+    } finally {
+      setNotifBusy(false)
+    }
+  }
+
   const saveOpencode = async () => {
     if (!window.api) return
     setBusy(true)
     try {
-      onSaved(await window.api.settings.set({ opencodePath: path, opencodeModel: model, opencodeAgent: agent }))
+      onSaved(
+        await window.api.settings.set({
+          opencodePath: path,
+          opencodeModel: model,
+          opencodeResearchModel: researchModel,
+          opencodeChatModel: chatModel,
+          opencodeFallbackModel: fallbackModel,
+          opencodeSubAgentModel: subAgentModel,
+          opencodeAgent: agent,
+        }),
+      )
       setStatus(null)
     } finally {
       setBusy(false)
@@ -391,6 +457,24 @@ export function ClaudePage({ settings, onSaved }: { settings: PublicSettings | n
             <StatusLine status={status} />
           </SettingsBlock>
         )}
+      </SettingsSection>
+
+      <SettingsSection
+        title="Desktop notifications"
+        description="A nudge when the agent finishes researching an organisation, or has questions about your event, so a long run in the background isn’t lost. Only while this window is in the background."
+      >
+        <SettingsRow title="Desktop notifications" description="Off by default. Chat suggestions never notify.">
+          <Button
+            variant={notifications ? 'secondary' : 'ghost'}
+            size="sm"
+            disabled={!desktop || notifBusy}
+            title={notifications ? 'On — click to turn off' : 'Off — click to turn on'}
+            onClick={() => void setNotifications(!notifications)}
+          >
+            {notifBusy ? <Loader2 className="animate-spin" /> : <Power className={notifications ? 'text-success' : 'text-muted-foreground'} />}
+            {notifications ? 'On' : 'Off'}
+          </Button>
+        </SettingsRow>
       </SettingsSection>
 
       {provider === 'claude' ? (
@@ -453,10 +537,95 @@ export function ClaudePage({ settings, onSaved }: { settings: PublicSettings | n
           </SettingsRow>
           <SettingsRow
             title="Model"
-            description="In provider/model form, e.g. anthropic/claude-sonnet-4-5. Blank uses your opencode default."
+            description="Default model for every task, in provider/model form, e.g. anthropic/claude-sonnet-4-5. Blank uses your opencode default."
             htmlFor="opencodeModel"
+            stacked
           >
-            <Input id="opencodeModel" className="w-56" value={model} onChange={(e) => setModel(e.target.value)} placeholder="(default)" />
+            <div className="space-y-2">
+              <Input id="opencodeModel" className="w-56" value={model} onChange={(e) => setModel(e.target.value)} placeholder="(default)" />
+              <ModelSuggestions onPick={setModel} disabled={!desktop} />
+              <button
+                type="button"
+                disabled={!desktop}
+                onClick={() => setShowTaskModels((v) => !v)}
+                className="flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+              >
+                <ChevronDown className={`size-3 transition-transform ${showTaskModels ? '' : '-rotate-90'}`} />
+                Research &amp; chat models
+              </button>
+            </div>
+          </SettingsRow>
+          {showTaskModels && (
+            <>
+              <SettingsRow
+                title="Research model"
+                description="Used for researching organisations, finding event details and writing or redrafting an email. Falls back to the model above when blank."
+                htmlFor="opencodeResearchModel"
+                stacked
+              >
+                <div className="space-y-2">
+                  <Input
+                    id="opencodeResearchModel"
+                    className="w-56"
+                    value={researchModel}
+                    onChange={(e) => setResearchModel(e.target.value)}
+                    placeholder="(same as model)"
+                  />
+                  <ModelSuggestions onPick={setResearchModel} disabled={!desktop} />
+                </div>
+              </SettingsRow>
+              <SettingsRow
+                title="Chat model"
+                description="Used for the chat sidebar where you refine an email. Falls back to the model above when blank."
+                htmlFor="opencodeChatModel"
+                stacked
+              >
+                <div className="space-y-2">
+                  <Input
+                    id="opencodeChatModel"
+                    className="w-56"
+                    value={chatModel}
+                    onChange={(e) => setChatModel(e.target.value)}
+                    placeholder="(same as model)"
+                  />
+                  <ModelSuggestions onPick={setChatModel} disabled={!desktop} />
+                </div>
+              </SettingsRow>
+            </>
+          )}
+          <SettingsRow
+            title="Fallback model"
+            description="Tried once if a task's model fails a request, e.g. when a free provider runs out of usage. Same provider/model form. Blank disables it."
+            htmlFor="opencodeFallbackModel"
+            stacked
+          >
+            <div className="space-y-2">
+              <Input
+                id="opencodeFallbackModel"
+                className="w-56"
+                value={fallbackModel}
+                onChange={(e) => setFallbackModel(e.target.value)}
+                placeholder="(none)"
+              />
+              <ModelSuggestions onPick={setFallbackModel} disabled={!desktop} />
+            </div>
+          </SettingsRow>
+          <SettingsRow
+            title="Sub-agent research model"
+            description="When set, research splits into three parallel sub-agents (overview, fit & history, news & contacts) that search with this model, then drafts from their combined notes on the research model above. Blank keeps research on a single run. A fast, cheap model suits this."
+            htmlFor="opencodeSubAgentModel"
+            stacked
+          >
+            <div className="space-y-2">
+              <Input
+                id="opencodeSubAgentModel"
+                className="w-56"
+                value={subAgentModel}
+                onChange={(e) => setSubAgentModel(e.target.value)}
+                placeholder="(off — single-run research)"
+              />
+              <ModelSuggestions onPick={setSubAgentModel} disabled={!desktop} />
+            </div>
           </SettingsRow>
           <SettingsRow
             title="Agent"
@@ -472,6 +641,8 @@ export function ClaudePage({ settings, onSaved }: { settings: PublicSettings | n
           </SettingsBlock>
         </SettingsSection>
       )}
+
+      <McpServersSection settings={settings} onSaved={onSaved} />
     </>
   )
 }

@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { ClaudeProgress, InroadApi } from '../shared/api'
+import type { AgentQuestionRequest, ClaudeProgress, InroadApi } from '../shared/api'
 
 const api: InroadApi = {
   platform: process.platform,
@@ -21,6 +21,7 @@ const api: InroadApi = {
     applyEventAnswers: (req) => ipcRenderer.invoke('claude:applyEventAnswers', req),
     writingRules: (req) => ipcRenderer.invoke('claude:writingRules', req),
     parseOrganisations: (text) => ipcRenderer.invoke('claude:parseOrganisations', text),
+    suggestLeads: (req) => ipcRenderer.invoke('claude:suggestLeads', req),
     onProgress: (cb) => {
       const listener = (_e: Electron.IpcRendererEvent, p: ClaudeProgress) => cb(p)
       ipcRenderer.on('claude:progress', listener)
@@ -29,6 +30,21 @@ const api: InroadApi = {
   },
   files: {
     pickAttachments: () => ipcRenderer.invoke('files:pickAttachments'),
+  },
+  agent: {
+    onQuestion: (cb) => {
+      const listener = (_e: Electron.IpcRendererEvent, req: AgentQuestionRequest) => cb(req)
+      ipcRenderer.on('agent:question', listener)
+      return () => ipcRenderer.removeListener('agent:question', listener)
+    },
+    pendingQuestions: () => ipcRenderer.invoke('agent:pendingQuestions'),
+    answer: (requestId, answers) => ipcRenderer.invoke('agent:answerQuestion', requestId, answers),
+  },
+  mcp: {
+    discover: () => ipcRenderer.invoke('mcp:discover'),
+    authStatus: () => ipcRenderer.invoke('mcp:authStatus'),
+    authenticate: (serverId) => ipcRenderer.invoke('mcp:authenticate', serverId),
+    logout: (serverId) => ipcRenderer.invoke('mcp:logout', serverId),
   },
   mail: {
     test: () => ipcRenderer.invoke('mail:test'),

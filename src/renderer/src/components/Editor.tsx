@@ -14,6 +14,7 @@ import { SidebarTrigger } from '@/components/ui/sidebar'
 import { cn } from '@/lib/utils'
 import {
   Check,
+  CircleCheck,
   Clock,
   PenLine,
   ExternalLink,
@@ -32,7 +33,7 @@ import {
   MessageSquareText,
 } from 'lucide-react'
 import { useMemo, useState, type CSSProperties, type ReactNode } from 'react'
-import type { Attachment, Prospect, Version } from '../data'
+import type { Attachment, Prospect, SubagentRun, Version } from '../data'
 import { useAgentName } from '../agent'
 import { changeCount } from '../diff'
 import { plainText } from '../markdown'
@@ -353,8 +354,16 @@ function Notice({ icon, title, children }: { icon: ReactNode; title: string; chi
 }
 
 function Researching({ prospect: p }: { prospect: Prospect }) {
+  const runs = p.subagents ?? []
   return (
     <Notice icon={<Loader2 className="animate-spin" />} title="Researching">
+      {runs.length > 0 && (
+        <div className="mb-3 grid gap-2 @md:grid-cols-3">
+          {runs.map((run, i) => (
+            <SubagentColumn key={i} run={run} />
+          ))}
+        </div>
+      )}
       <ol className="space-y-1">
         {p.progress.map((step, i) => (
           <li key={i} className={i === p.progress.length - 1 ? 'text-foreground' : ''}>
@@ -363,6 +372,32 @@ function Researching({ prospect: p }: { prospect: Prospect }) {
         ))}
       </ol>
     </Notice>
+  )
+}
+
+// One fan-out sub-agent's live activity, one column of the side-by-side grid.
+function SubagentColumn({ run }: { run: SubagentRun }) {
+  const failed = run.done && run.steps.at(-1)?.startsWith('Failed — ')
+  return (
+    <div className={cn('min-w-0 rounded-lg border bg-background/60 p-2.5 text-xs', run.done && 'opacity-75')}>
+      <div className="mb-1.5 flex items-center gap-1.5 font-medium text-foreground">
+        {!run.done ? (
+          <Loader2 className="size-3 shrink-0 animate-spin text-muted-foreground" />
+        ) : failed ? (
+          <CircleAlert className="size-3 shrink-0 text-destructive" />
+        ) : (
+          <CircleCheck className="size-3 shrink-0 text-success" />
+        )}
+        <span className="truncate">{run.label || 'Sub-agent'}</span>
+      </div>
+      <ul className="max-h-44 space-y-0.5 overflow-y-auto text-muted-foreground">
+        {run.steps.map((s, i) => (
+          <li key={i} className={i === run.steps.length - 1 && !run.done ? 'text-foreground' : ''}>
+            {s}
+          </li>
+        ))}
+      </ul>
+    </div>
   )
 }
 

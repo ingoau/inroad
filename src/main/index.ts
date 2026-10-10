@@ -1,11 +1,14 @@
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import { join } from 'node:path'
-import type { ClaudeProgress, DraftInput, Result } from '../shared/api'
+import type { AgentQuestionRequest, ClaudeProgress, DraftInput, Result } from '../shared/api'
 import * as ai from './ai'
 import { configureClaude } from './claude'
 import { attachmentFile, pickAttachments } from './files'
 import { deleteDraft, saveDraft, testMail, type MailCreds } from './mail'
+import { discoverMcpServers } from './mcp'
+import { authenticate as authenticateMcp, authStatus as mcpAuthStatus, logout as logoutMcp } from './mcp-auth'
+import { disposeOpencode, setQuestionHandler } from './opencode'
 import { getAiConfig, getPublicSettings, getSecrets, updateSettings } from './settings'
 import { loadState, saveState } from './store'
 
@@ -55,6 +58,8 @@ app.whenReady().then(() => {
   configureClaude({
     workspace: join(app.getPath('userData'), 'agent-workspace'),
     clientApp: `inroad/${app.getVersion()}`,
+    // MCP sign-in opens the browser itself; the module stays Electron-free.
+    openExternal: (url) => shell.openExternal(url),
     // Packaged: a binary inside app.asar can't be spawned, so point at the unpacked copy (see asarUnpack).
     executable: app.isPackaged
       ? join(
@@ -86,6 +91,28 @@ app.whenReady().then(() => {
   ipcMain.handle('claude:applyEventAnswers', async (_e, req) => ai.applyEventAnswers(await config(), req))
   ipcMain.handle('claude:writingRules', async (_e, req) => ai.writingRules(await config(), req))
   ipcMain.handle('claude:parseOrganisations', async (_e, text: string) => ai.parseOrganisations(await config(), text))
+  ipcMain.handle('claude:suggestLeads', async (e, req) => ai.suggestLeads(await config(), req, emitTo(e.sender)))
+
+  // Mid-run questions from the opencode agent: broadcast each to every window,
+  // then wait for the renderer to answer (or skip) before the run continues.
+  const pendingQuestions = new Map<string, { request: AgentQuestionRequest; resolve: (answers: string[][]) => void }>()
+  setQuestionHandler((request) => {
+    for (const win of BrowserWindow.getAllWindows()) if (!win.webContents.isDestroyed()) win.webContents.send('agent:question', request)
+    return new Promise<string[][]>((resolve) => pendingQuestions.set(request.requestId, { request, resolve }))
+  })
+  ipcMain.handle('agent:pendingQuestions', () => [...pendingQuestions.values()].map((p) => p.request))
+  ipcMain.handle('agent:answerQuestion', (_e, requestId: string, answers: string[][]): Result<null> => {
+    const pending = pendingQuestions.get(requestId)
+    if (!pending) return { ok: false, error: 'That question is no longer waiting.' }
+    pendingQuestions.delete(requestId)
+    pending.resolve(Array.isArray(answers) ? answers : [])
+    return { ok: true, value: null }
+  })
+
+  ipcMain.handle('mcp:discover', () => discoverMcpServers())
+  ipcMain.handle('mcp:authStatus', () => mcpAuthStatus())
+  ipcMain.handle('mcp:authenticate', (_e, id: string) => authenticateMcp(id))
+  ipcMain.handle('mcp:logout', (_e, id: string) => logoutMcp(id))
   ipcMain.handle('mail:test', () => withMail((c) => testMail(c)))
   ipcMain.handle('mail:saveDraft', (_e, draft: DraftInput) =>
     withMail(async (c) => {
@@ -110,3 +137,6 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
+
+// Stop the background opencode server (when one was started).
+app.on('will-quit', () => disposeOpencode())

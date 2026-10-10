@@ -1,7 +1,7 @@
 import { app, safeStorage } from 'electron'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import type { AiProvider, MailSettings, PublicSettings, SettingsPatch } from '../shared/api'
+import type { AiProvider, MailSettings, McpServer, PublicSettings, SettingsPatch } from '../shared/api'
 
 // Secrets are encrypted with the OS keychain (safeStorage) before touching disk.
 interface StoredSettings {
@@ -9,16 +9,34 @@ interface StoredSettings {
   mailPassword?: string // base64 of encrypted bytes
   anthropicKey?: string
   aiProvider?: AiProvider
+  desktopNotifications?: boolean
   opencodePath?: string
   opencodeModel?: string
+  opencodeResearchModel?: string
+  opencodeChatModel?: string
+  opencodeFallbackModel?: string
   opencodeAgent?: string
+  opencodeSubAgentModel?: string
+  // The whole MCP server list, encrypted as one JSON blob (headers and env
+  // often hold API keys, just like the mail password).
+  mcpServers?: string
 }
 
 // Everything the main process needs to run a request against the chosen backend.
 export interface AiConfig {
   provider: AiProvider
   anthropicKey?: string
-  opencode: { executable: string; workspace: string; model?: string; agent: string }
+  mcpServers: McpServer[]
+  opencode: {
+    executable: string
+    workspace: string
+    model?: string
+    researchModel?: string
+    chatModel?: string
+    fallbackModel?: string
+    agent: string
+    subAgentModel?: string
+  }
 }
 
 const file = () => join(app.getPath('userData'), 'settings.json')
@@ -59,13 +77,36 @@ function decrypt(enc?: string): string | undefined {
   return safeStorage.decryptString(Buffer.from(raw, 'base64'))
 }
 
+// The whole MCP list is stored as one encrypted JSON blob; decrypt it back into
+// the array the renderer and backends expect. A bad blob reads as no servers.
+function decryptMcp(enc?: string): McpServer[] {
+  const json = decrypt(enc)
+  if (!json) return []
+  try {
+    const parsed = JSON.parse(json)
+    return Array.isArray(parsed) ? (parsed as McpServer[]) : []
+  } catch {
+    return []
+  }
+}
+
 const toPublic = (s: StoredSettings): PublicSettings => ({
   mail: s.mail,
   hasMailPassword: !!s.mailPassword,
   hasAnthropicKey: !!s.anthropicKey,
   aiProvider: s.aiProvider ?? 'claude',
-  opencode: { path: s.opencodePath ?? '', model: s.opencodeModel ?? '', agent: s.opencodeAgent ?? '' },
+  opencode: {
+    path: s.opencodePath ?? '',
+    model: s.opencodeModel ?? '',
+    researchModel: s.opencodeResearchModel ?? '',
+    chatModel: s.opencodeChatModel ?? '',
+    fallbackModel: s.opencodeFallbackModel ?? '',
+    agent: s.opencodeAgent ?? '',
+    subAgentModel: s.opencodeSubAgentModel ?? '',
+  },
+  mcpServers: decryptMcp(s.mcpServers),
   secureStorage: safeStorage.isEncryptionAvailable(),
+  desktopNotifications: s.desktopNotifications ?? false,
 })
 
 export async function getPublicSettings() {
@@ -81,7 +122,13 @@ export async function updateSettings(patch: SettingsPatch) {
   if (patch.aiProvider !== undefined) s.aiProvider = patch.aiProvider
   if (patch.opencodePath !== undefined) s.opencodePath = patch.opencodePath
   if (patch.opencodeModel !== undefined) s.opencodeModel = patch.opencodeModel
+  if (patch.opencodeResearchModel !== undefined) s.opencodeResearchModel = patch.opencodeResearchModel
+  if (patch.opencodeChatModel !== undefined) s.opencodeChatModel = patch.opencodeChatModel
+  if (patch.opencodeFallbackModel !== undefined) s.opencodeFallbackModel = patch.opencodeFallbackModel
   if (patch.opencodeAgent !== undefined) s.opencodeAgent = patch.opencodeAgent
+  if (patch.opencodeSubAgentModel !== undefined) s.opencodeSubAgentModel = patch.opencodeSubAgentModel
+  if (patch.mcpServers !== undefined) s.mcpServers = patch.mcpServers.length ? encrypt(JSON.stringify(patch.mcpServers)) : undefined
+  if (patch.desktopNotifications !== undefined) s.desktopNotifications = patch.desktopNotifications
   await write(s)
   return toPublic(s)
 }
@@ -98,11 +145,16 @@ export async function getAiConfig(): Promise<AiConfig> {
   return {
     provider: s.aiProvider ?? 'claude',
     anthropicKey: decrypt(s.anthropicKey),
+    mcpServers: decryptMcp(s.mcpServers),
     opencode: {
       executable: s.opencodePath?.trim() || 'opencode',
       workspace: agentWorkspace(),
       model: s.opencodeModel?.trim() || undefined,
-      agent: s.opencodeAgent?.trim() || 'inroad',
-    },
+      researchModel: s.opencodeResearchModel?.trim() || undefined,
+      chatModel: s.opencodeChatModel?.trim() || undefined,
+    fallbackModel: s.opencodeFallbackModel?.trim() || undefined,
+    agent: s.opencodeAgent?.trim() || 'inroad',
+    subAgentModel: s.opencodeSubAgentModel?.trim() || undefined,
+  },
   }
 }

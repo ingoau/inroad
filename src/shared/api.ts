@@ -130,6 +130,36 @@ export interface EventLookupResult {
   questions: EventQuestion[]
 }
 
+// ---- The opencode agent's mid-run question tool ----
+// The opencode backend can pause a run to ask the user something, the same way
+// its own CLI does. This is separate from EventQuestion above, which is a
+// post-run list folded into the event details.
+export interface AgentQuestionOption {
+  label: string
+  description?: string
+}
+
+export interface AgentQuestion {
+  question: string
+  // A short heading the agent may suggest, e.g. "Venue".
+  header?: string
+  // Answers to pick from. Empty means an open question.
+  options: AgentQuestionOption[]
+  // Whether more than one option can be chosen.
+  multiple?: boolean
+  // Whether the user may type their own answer. Defaults to true.
+  custom?: boolean
+}
+
+// One pending question: the run is paused until it's answered or skipped.
+export interface AgentQuestionRequest {
+  // opencode's own id, used when replying.
+  requestId: string
+  // What the agent was doing, e.g. "Researching Canva", shown as context.
+  context: string
+  questions: AgentQuestion[]
+}
+
 export interface EventAnswersRequest {
   name: string
   // The current shared context (may include the user's own text).
@@ -151,6 +181,22 @@ export interface ParsedOrganisation {
   note: string
 }
 
+// Adding organisations: let the agent propose organisations to reach, based on
+// the folder's event info and the campaign's notes.
+export interface LeadSuggestionsRequest {
+  jobId: string
+  // The folder's shared context: what the event is.
+  eventInfo: string
+  // The campaign's notes: who you're contacting and what you're asking for.
+  campaignNotes: string
+  // The campaign's email format, if set.
+  emailFormat?: string
+  // Organisations already in the campaign, so they aren't suggested again.
+  existing?: string[]
+  // How many to suggest. Defaults to 8.
+  count?: number
+}
+
 export interface VoiceLearnRequest {
   voiceName: string
   notes: string[]
@@ -164,8 +210,12 @@ export interface VoiceLearnResult {
   remove: string[]
 }
 
-// Streamed while a request runs: research steps, or chat text as it arrives.
-export type ClaudeProgress = { jobId: string; kind: 'step'; text: string } | { jobId: string; kind: 'delta'; text: string }
+// Streamed while a request runs: research steps, chat text as it arrives, or
+// what one fan-out research sub-agent is doing (subagent indexes the column).
+export type ClaudeProgress =
+  | { jobId: string; kind: 'step'; text: string }
+  | { jobId: string; kind: 'delta'; text: string }
+  | { jobId: string; kind: 'subagent'; subagent: number; label: string; text: string; done?: boolean }
 
 export interface MailSettings {
   host: string
@@ -183,8 +233,75 @@ export type AiProvider = 'claude' | 'opencode'
 // How Inroad reaches the opencode CLI. Empty path means "opencode" on PATH.
 export interface OpencodeSettings {
   path: string
+  // Default model for any task without its own model below.
   model: string
+  // Overrides for the two main flows, falling back to `model` when blank.
+  researchModel: string
+  chatModel: string
+  // Tried once if the chosen model fails a request, e.g. when a provider runs
+  // out of usage. Empty disables the fallback.
+  fallbackModel: string
   agent: string
+  // When set, research fans out to three parallel sub-agents running this model.
+  subAgentModel: string
+}
+
+// One environment variable or HTTP header. Kept as an ordered list so the UI can
+// edit rows (and blank ones) without object keys colliding.
+export interface McpKeyValue {
+  key: string
+  value: string
+}
+
+// A Model Context Protocol server the agent can use, added in Settings → AI
+// agent. Local ("stdio") servers run a command; remote servers connect to a URL.
+export interface McpServer {
+  id: string
+  name: string
+  transport: 'stdio' | 'http' | 'sse'
+  // stdio only: the command to run and its arguments (one per line in the UI).
+  command: string
+  args: string[]
+  // stdio only: environment variables passed to the server process.
+  env: McpKeyValue[]
+  // http/sse only: the server URL.
+  url: string
+  // http/sse only: request headers.
+  headers: McpKeyValue[]
+  // Whether the agent connects to it. A server can stay configured but off.
+  enabled: boolean
+}
+
+// The key a server is stored under in Claude and opencode config. It's the
+// server's own name, unsanitized, so OAuth tokens the CLIs already saved (keyed
+// by the original name) are found and reused instead of being re-authenticated.
+export function mcpServerKey(s: McpServer): string {
+  return s.name.trim() || s.id
+}
+
+// An MCP server found in the user's existing Claude Code or opencode setup,
+// offered so they can add it to Inroad without retyping it.
+export interface DiscoveredMcpServer {
+  server: McpServer
+  // Which setup it came from, e.g. "Claude Code" or "opencode".
+  source: string
+  // Where in that setup, e.g. "user settings" or a project path.
+  scope: string
+  // Whether that setup already has an OAuth token for this server.
+  authenticated: boolean
+}
+
+// How a remote MCP server's OAuth sign-in is doing. 'connected' means a token
+// is stored; 'needs-auth' means the CLI has flagged it; 'unknown' means we
+// can't tell without connecting; 'failed' means the last attempt errored.
+export type McpAuthState = 'connected' | 'needs-auth' | 'failed' | 'unknown'
+
+export interface McpAuthStatus {
+  // Matches McpServer.id.
+  id: string
+  state: McpAuthState
+  // Extra context for the UI, e.g. why a sign-in failed.
+  detail?: string
 }
 
 // What the renderer sees: secrets are never sent back, only whether they're set.
@@ -195,8 +312,13 @@ export interface PublicSettings {
   hasAnthropicKey: boolean
   aiProvider: AiProvider
   opencode: OpencodeSettings
+  // MCP servers the agent may connect to (Settings → AI agent).
+  mcpServers: McpServer[]
   // False when the OS has no keychain, so secrets are stored unencrypted locally.
   secureStorage: boolean
+  // Desktop notifications when research finishes or the agent has questions
+  // (Settings → AI agent). Off by default, and only while the window is unfocused.
+  desktopNotifications: boolean
 }
 
 export interface SettingsPatch {
@@ -204,9 +326,15 @@ export interface SettingsPatch {
   mailPassword?: string
   anthropicKey?: string
   aiProvider?: AiProvider
+  desktopNotifications?: boolean
   opencodePath?: string
   opencodeModel?: string
+  opencodeResearchModel?: string
+  opencodeChatModel?: string
+  opencodeFallbackModel?: string
   opencodeAgent?: string
+  opencodeSubAgentModel?: string
+  mcpServers?: McpServer[]
 }
 
 // A file attached to a campaign's emails. Picked files are copied into
@@ -258,12 +386,34 @@ export interface InroadApi {
     applyEventAnswers: (req: EventAnswersRequest) => Promise<Result<{ details: string }>>
     writingRules: (req: WritingRulesRequest) => Promise<Result<{ notes: string[] }>>
     parseOrganisations: (text: string) => Promise<Result<ParsedOrganisation[]>>
+    // Suggests organisations to reach, from the folder's event info and the
+    // campaign's notes. Same shape as parseOrganisations.
+    suggestLeads: (req: LeadSuggestionsRequest) => Promise<Result<ParsedOrganisation[]>>
     // Subscribe to progress for running requests; returns an unsubscribe function.
     onProgress: (cb: (p: ClaudeProgress) => void) => () => void
+  }
+  agent: {
+    // Fires when a running opencode agent asks the user a question; the run is
+    // paused until answer() or skip (empty answers) is called.
+    onQuestion: (cb: (req: AgentQuestionRequest) => void) => () => void
+    // Questions still waiting, so a reloaded window can show them again.
+    pendingQuestions: () => Promise<AgentQuestionRequest[]>
+    // One array of answers per question; an empty array means "unanswered".
+    answer: (requestId: string, answers: string[][]) => Promise<Result<null>>
   }
   files: {
     // Opens the system file picker; resolves to [] if cancelled.
     pickAttachments: () => Promise<Attachment[]>
+  }
+  mcp: {
+    // MCP servers already configured on this computer (Claude Code / opencode).
+    discover: () => Promise<DiscoveredMcpServer[]>
+    // OAuth sign-in state for the configured remote servers, for the current provider.
+    authStatus: () => Promise<McpAuthStatus[]>
+    // Starts an OAuth sign-in (opens the browser); resolves once it completes.
+    authenticate: (serverId: string) => Promise<Result<McpAuthStatus>>
+    // Removes this server's stored OAuth token.
+    logout: (serverId: string) => Promise<Result<McpAuthStatus>>
   }
   mail: {
     // Connects with the saved settings and reports the Drafts folder it found.

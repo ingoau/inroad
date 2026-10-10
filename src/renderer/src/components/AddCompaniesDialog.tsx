@@ -2,10 +2,11 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
-import { ArrowLeft, ArrowRight, CircleAlert, Globe, Loader2, Sparkles, X } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { ArrowLeft, ArrowRight, CircleAlert, Globe, Loader2, Sparkles, WandSparkles, X } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
 import type { ParsedOrganisation } from '../../../shared/api'
 import type { Campaign } from '../data'
+import { useAgentName } from '../agent'
 import { ButtonKeys } from './hint'
 
 // A plain list of names, one per line, doesn't need Claude to read it.
@@ -26,18 +27,30 @@ export function AddCompaniesDialog({
   onOpenChange,
   campaign,
   voiceName,
+  eventInfo,
+  existing,
   onAdd,
 }: {
   open: boolean
   onOpenChange: (o: boolean) => void
   campaign: Campaign
   voiceName: string
+  // The folder's shared context; what "Suggest leads" reasons from.
+  eventInfo: string
+  // Organisations already in the campaign, so suggestions don't repeat them.
+  existing?: string[]
   onAdd: (orgs: ParsedOrganisation[]) => void
 }) {
+  const agent = useAgentName()
   const [text, setText] = useState('')
   const [orgs, setOrgs] = useState<ParsedOrganisation[] | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  // Whether we're asking the agent for suggestions, and its last progress lines.
+  const [suggesting, setSuggesting] = useState(false)
+  const [steps, setSteps] = useState<string[]>([])
+  const [suggestError, setSuggestError] = useState('')
+  const job = useRef('')
   const lines = text
     .split('\n')
     .map((l) => l.trim())
@@ -48,7 +61,35 @@ export function AddCompaniesDialog({
     if (!open) return
     setOrgs(null)
     setError('')
+    setSteps([])
+    setSuggestError('')
   }, [open])
+
+  // Progress from a "Suggest leads" run (search and page reads).
+  useEffect(() => window.api?.claude.onProgress((p) => {
+    if (p.jobId === job.current && p.kind === 'step') setSteps((s) => [...s, p.text])
+  }), [])
+
+  const canSuggest = !!window.api && !suggesting && !!(eventInfo.trim() || campaign.notes.trim())
+
+  const suggest = async () => {
+    if (!canSuggest) return
+    job.current = crypto.randomUUID()
+    setSuggesting(true)
+    setSteps([])
+    setSuggestError('')
+    const res = await window.api!.claude.suggestLeads({
+      jobId: job.current,
+      eventInfo: eventInfo.trim(),
+      campaignNotes: campaign.notes.trim(),
+      emailFormat: campaign.format,
+      existing,
+      count: 8,
+    })
+    setSuggesting(false)
+    if (!res.ok) return setSuggestError(res.error)
+    setOrgs(res.value)
+  }
 
   const next = async () => {
     if (!lines.length || busy) return
@@ -78,12 +119,40 @@ export function AddCompaniesDialog({
           <DialogDescription>
             {orgs
               ? 'Check the list. Notes are followed for that organisation only, on top of the campaign’s notes and email format.'
-              : 'Write it however you like: a list of names, or notes about what to say to each one.'}
+              : `Write it however you like — a list of names, or notes about what to say to each one — or have ${agent} suggest leads from your event info.`}
           </DialogDescription>
         </DialogHeader>
 
         {!orgs ? (
           <>
+            <div className="flex items-start justify-between gap-3 rounded-lg border bg-muted/30 p-3">
+              <div className="text-sm">
+                <div className="font-medium">Suggest leads</div>
+                <p className="mt-0.5 text-muted-foreground">
+                  {eventInfo.trim() || campaign.notes.trim()
+                    ? `${agent} proposes organisations to reach, based on the folder’s event info and this campaign. You review them before adding.`
+                    : 'Add the event info (in the folder’s settings) or this campaign’s notes first, so there’s something to work from.'}
+                </p>
+              </div>
+              <Button variant="outline" className="shrink-0" disabled={!canSuggest} onClick={suggest}>
+                {suggesting ? <Loader2 className="animate-spin" /> : <WandSparkles />} Suggest
+              </Button>
+            </div>
+            {suggesting && (
+              <ol className="space-y-1 rounded-lg border bg-muted/40 p-3 text-sm text-muted-foreground">
+                {(steps.length ? steps : ['Thinking…']).slice(-5).map((s, i, all) => (
+                  <li key={i} className={i === all.length - 1 ? 'flex items-center gap-2 text-foreground' : 'pl-6'}>
+                    {i === all.length - 1 && <Loader2 className="size-4 shrink-0 animate-spin" />}
+                    {s}
+                  </li>
+                ))}
+              </ol>
+            )}
+            {suggestError && (
+              <p className="flex items-start gap-2 text-sm text-destructive">
+                <CircleAlert className="mt-0.5 size-4 shrink-0" /> {suggestError}
+              </p>
+            )}
             <Textarea
               autoFocus
               value={text}
@@ -115,7 +184,7 @@ export function AddCompaniesDialog({
               if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') submit()
             }}
           >
-            {orgs.length === 0 && <p className="p-3 text-sm text-muted-foreground">Claude didn’t find any organisations in that. Go back and try again.</p>}
+            {orgs.length === 0 && <p className="p-3 text-sm text-muted-foreground">{agent} didn’t find any organisations. Go back and try again.</p>}
             {orgs.map((o, i) => (
               <div key={i} className="grid gap-1.5 p-2.5">
                 <div className="flex items-center gap-2">

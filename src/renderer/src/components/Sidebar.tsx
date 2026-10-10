@@ -255,7 +255,7 @@ export function AppSidebar(props: Props) {
                               p.status === 'saved' || p.status === 'failed' ? statusStyle[p.status].tone : 'text-muted-foreground',
                             )}
                           >
-                            {p.status === 'researching' ? (p.progress.at(-1) ?? 'Starting…') : statusStyle[p.status].label}
+                            {p.status === 'researching' ? (p.subagents?.some((r) => !r.done) ? `${p.subagents.filter((r) => !r.done).length} sub-agents researching` : (p.progress.at(-1) ?? 'Starting…')) : statusStyle[p.status].label}
                           </span>
                         </div>
                       </SidebarMenuButton>

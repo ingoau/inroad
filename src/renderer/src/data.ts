@@ -12,6 +12,13 @@ export interface Proposal {
   state: 'pending' | 'accepted' | 'rejected'
 }
 
+// One fan-out research sub-agent's live activity, shown in its own column.
+export interface SubagentRun {
+  label: string
+  steps: string[]
+  done?: boolean
+}
+
 export interface ChatMsg {
   id: string
   role: 'user' | 'assistant'
@@ -64,6 +71,8 @@ export interface Prospect {
   note?: string
   status: Status
   progress: string[]
+  // Live columns while research fans out to sub-agents (cleared with progress).
+  subagents?: SubagentRun[]
   error?: string
   brief?: Brief
   // Claude's research notes with sources, so redrafting doesn't search again.
