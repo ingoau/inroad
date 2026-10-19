@@ -9,17 +9,25 @@ interface StoredSettings {
   mailPassword?: string // base64 of encrypted bytes
   anthropicKey?: string
   aiProvider?: AiProvider
+  claudeModel?: string
+  claudeUtilityModel?: string
   opencodePath?: string
   opencodeModel?: string
+  opencodeUtilityModel?: string
   opencodeAgent?: string
 }
 
 // Everything the main process needs to run a request against the chosen backend.
 export interface AiConfig {
   provider: AiProvider
-  anthropicKey?: string
-  opencode: { executable: string; workspace: string; model?: string; agent: string }
+  claude: { apiKey?: string; model: string; utilityModel: string }
+  opencode: { executable: string; workspace: string; model?: string; utilityModel?: string; agent: string }
 }
+
+// 'opus' resolves to the newest Opus the account can use; quick processing
+// jobs default to the smaller, faster Haiku.
+export const DEFAULT_CLAUDE_MODEL = 'opus'
+export const DEFAULT_CLAUDE_UTILITY_MODEL = 'haiku'
 
 const file = () => join(app.getPath('userData'), 'settings.json')
 
@@ -64,7 +72,8 @@ const toPublic = (s: StoredSettings): PublicSettings => ({
   hasMailPassword: !!s.mailPassword,
   hasAnthropicKey: !!s.anthropicKey,
   aiProvider: s.aiProvider ?? 'claude',
-  opencode: { path: s.opencodePath ?? '', model: s.opencodeModel ?? '', agent: s.opencodeAgent ?? '' },
+  claude: { model: s.claudeModel ?? '', utilityModel: s.claudeUtilityModel ?? '' },
+  opencode: { path: s.opencodePath ?? '', model: s.opencodeModel ?? '', utilityModel: s.opencodeUtilityModel ?? '', agent: s.opencodeAgent ?? '' },
   secureStorage: safeStorage.isEncryptionAvailable(),
 })
 
@@ -79,8 +88,11 @@ export async function updateSettings(patch: SettingsPatch) {
   if (patch.mailPassword !== undefined) s.mailPassword = patch.mailPassword ? encrypt(patch.mailPassword) : undefined
   if (patch.anthropicKey !== undefined) s.anthropicKey = patch.anthropicKey ? encrypt(patch.anthropicKey) : undefined
   if (patch.aiProvider !== undefined) s.aiProvider = patch.aiProvider
+  if (patch.claudeModel !== undefined) s.claudeModel = patch.claudeModel
+  if (patch.claudeUtilityModel !== undefined) s.claudeUtilityModel = patch.claudeUtilityModel
   if (patch.opencodePath !== undefined) s.opencodePath = patch.opencodePath
   if (patch.opencodeModel !== undefined) s.opencodeModel = patch.opencodeModel
+  if (patch.opencodeUtilityModel !== undefined) s.opencodeUtilityModel = patch.opencodeUtilityModel
   if (patch.opencodeAgent !== undefined) s.opencodeAgent = patch.opencodeAgent
   await write(s)
   return toPublic(s)
@@ -97,11 +109,16 @@ export async function getAiConfig(): Promise<AiConfig> {
   const s = await read()
   return {
     provider: s.aiProvider ?? 'claude',
-    anthropicKey: decrypt(s.anthropicKey),
+    claude: {
+      apiKey: decrypt(s.anthropicKey),
+      model: s.claudeModel?.trim() || DEFAULT_CLAUDE_MODEL,
+      utilityModel: s.claudeUtilityModel?.trim() || DEFAULT_CLAUDE_UTILITY_MODEL,
+    },
     opencode: {
       executable: s.opencodePath?.trim() || 'opencode',
       workspace: agentWorkspace(),
       model: s.opencodeModel?.trim() || undefined,
+      utilityModel: s.opencodeUtilityModel?.trim() || undefined,
       agent: s.opencodeAgent?.trim() || 'inroad',
     },
   }

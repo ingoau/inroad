@@ -25,10 +25,18 @@ import type {
 
 // Inroad drives Claude through the Claude Agent SDK (Claude Code as a library).
 // With no API key set it uses this machine's Claude Code login; with a key it
-// bills that key. 'opus' resolves to the newest Opus the account can use.
-const MODEL = 'opus'
+// bills that key. Models come from Settings → AI agent: `model` for research,
+// drafting and chat, `utilityModel` for quick processing jobs.
+export interface ClaudeConfig {
+  apiKey?: string
+  model: string
+  utilityModel: string
+}
 
 type Emit = (p: ClaudeProgress) => void
+
+// What a stopped request reports (see run).
+const STOPPED = 'Stopped.'
 
 // Set once at startup (kept free of Electron imports so scripts can test this module).
 // executable: set in packaged builds, where the SDK's bundled binary is unpacked
@@ -41,15 +49,17 @@ export function configureClaude(c: typeof config) {
 
 // Each run gets an empty working folder and none of the user's own Claude Code
 // settings, memory or skills, so it only ever has the tools listed here.
-function baseOptions(apiKey: string | undefined, opts: Partial<Options>): Options {
+function baseOptions(cfg: ClaudeConfig, opts: Partial<Options>): Options {
   const cwd = config.workspace
+  const apiKey = cfg.apiKey
   return {
-    model: MODEL,
+    model: cfg.model,
     cwd,
     ...(config.executable ? { pathToClaudeCodeExecutable: config.executable } : {}),
     settingSources: [],
     // The user's claude.ai connectors (Slack, email…) only load for the event
-    // lookup, which asks for them; elsewhere they'd just add noise and startup time.
+    // lookup and chat, which ask for them (see readOnlyConnectors); elsewhere
+    // they'd just add noise and startup time.
     settings: { disableClaudeAiConnectors: true },
     persistSession: false,
     // Anything not explicitly allowed is denied, never prompted for.
@@ -68,13 +78,15 @@ const AUTH_ERRORS: Record<string, string> = {
   oauth_org_not_allowed: 'Your Claude organisation doesn’t allow this. Add an API key in Settings instead.',
   billing_error: 'Claude reported a billing problem with this account.',
   rate_limit: 'You’ve hit Claude’s usage limit. Try again later.',
-  model_not_found: 'Your Claude plan doesn’t include the model Inroad uses.',
+  model_not_found: 'Your Claude plan doesn’t include the model chosen in Settings → AI agent.',
 }
 
 // Runs one agent query to completion: forwards progress, returns the final
 // result message, and turns SDK failures into messages a user can act on.
+// Aborting options.abortController stops it with STOPPED.
 async function run(prompt: string, options: Options, onMessage?: (m: SDKMessage) => void) {
   let authError: string | undefined
+  const stopped = () => options.abortController?.signal.aborted
   try {
     for await (const message of query({ prompt, options })) {
       onMessage?.(message)
@@ -85,8 +97,10 @@ async function run(prompt: string, options: Options, onMessage?: (m: SDKMessage)
       }
     }
   } catch (err) {
+    if (stopped()) throw new Error(STOPPED)
     throw new Error(authError ?? (err instanceof Error ? err.message : String(err)))
   }
+  if (stopped()) throw new Error(STOPPED)
   throw new Error(authError ?? 'Claude ended without a result.')
 }
 
@@ -181,24 +195,34 @@ const EmailFields = {
 // Only keep comments whose quote really is in the body.
 const anchored = (body: string, comments: EmailComment[]) => comments.filter((c) => c.quote.trim() && body.includes(c.quote))
 
-const ResearchDraftSchema = z.object({
+const ResearchOnlySchema = z.object({
   research_notes: z
     .string()
-    .describe('Everything useful you found, each fact with its source URL. Kept so the email can be rewritten later without searching again.'),
+    .describe('Everything useful you found, each fact with its source URL. Kept so the email can be written later without searching again.'),
   brief: BriefSchema,
-  ...EmailFields,
 })
+
+const ResearchDraftSchema = ResearchOnlySchema.extend(EmailFields)
 
 const WRITING_RULES = `Write the email exactly as the user writes: follow their style notes, and treat the examples (Claude's draft vs. what they actually sent) as the strongest signal of their preferences. Use only facts from your research; never invent details, numbers, people or email addresses. Open with something specific to this organisation, make one clear ask drawn from the campaign notes, and keep it short enough to read on a phone. Address the best recipient by first name when you have one. ${GUIDANCE_RULE}`
 
+const RESEARCH_STEPS = `Research with WebSearch and WebFetch: what the organisation does; why they'd be a good fit for what the campaign asks for; recent, specific things that would open an email well; and the best people or inboxes to contact. Use any instructions the user gave for this organisation in your research too (for example, who to write to or what to look into). A handful of searches and a few page reads is usually enough. Only give an email address if it's published or very strongly evidenced, and say how you know.`
+
 const RESEARCH_SYSTEM = `You research an organisation and write the user a personalised first-contact email to it. The user's campaign notes say what they're reaching out about and what to look for.
 
-Research with WebSearch and WebFetch: what the organisation does; why they'd be a good fit for what the campaign asks for; recent, specific things that would open the email well; and the best people or inboxes to contact. Use any instructions the user gave for this organisation in your research too (for example, who to write to or what to look into). A handful of searches and a few page reads is usually enough. Only give an email address if it's published or very strongly evidenced, and say how you know.
+${RESEARCH_STEPS}
 
 ${WRITING_RULES}`
 
-export async function researchAndDraft(apiKey: string | undefined, req: ResearchRequest, emit: Emit): Promise<Result<ResearchResult>> {
+// The user turned drafting off: research and the brief, but no email yet.
+const RESEARCH_ONLY_SYSTEM = `You research an organisation for the user, who may write to it later. The user's campaign notes say what they're reaching out about and what to look for. Don't write an email: turn what you find into research notes and a brief for the user to skim.
+
+${RESEARCH_STEPS}`
+
+export async function researchAndDraft(cfg: ClaudeConfig, req: ResearchRequest, emit: Emit, abort?: AbortController): Promise<Result<ResearchResult>> {
   return guard(async () => {
+    const withDraft = req.draft !== false
+    const schema = withDraft ? ResearchDraftSchema : ResearchOnlySchema
     emit({ jobId: req.jobId, kind: 'step', text: `Researching ${req.company}` })
     const prompt = [
       `<campaign_notes>\n${req.campaignNotes || '(none)'}\n</campaign_notes>`,
@@ -209,13 +233,14 @@ export async function researchAndDraft(apiKey: string | undefined, req: Research
     ].join('\n\n')
     const result = await run(
       prompt,
-      baseOptions(apiKey, {
-        systemPrompt: RESEARCH_SYSTEM,
+      baseOptions(cfg, {
+        systemPrompt: withDraft ? RESEARCH_SYSTEM : RESEARCH_ONLY_SYSTEM,
         tools: ['WebSearch', 'WebFetch'],
         allowedTools: ['WebSearch', 'WebFetch'],
         effort: 'high',
         maxTurns: 30,
-        ...structured(ResearchDraftSchema),
+        abortController: abort,
+        ...structured(schema),
       }),
       // Each search / page read becomes a progress line in the UI.
       (m) => {
@@ -228,11 +253,16 @@ export async function researchAndDraft(apiKey: string | undefined, req: Research
         }
       },
     )
+    if (!withDraft) {
+      const out = parseOutput(ResearchOnlySchema, result.structured_output)
+      return { research: out.research_notes, brief: out.brief }
+    }
     emit({ jobId: req.jobId, kind: 'step', text: 'Writing draft' })
     const out = parseOutput(ResearchDraftSchema, result.structured_output)
     return {
       research: out.research_notes,
-      draft: { brief: out.brief, to: out.to, subject: out.subject, body: out.body, comments: anchored(out.body, out.comments) },
+      brief: out.brief,
+      draft: { to: out.to, subject: out.subject, body: out.body, comments: anchored(out.body, out.comments) },
     }
   })
 }
@@ -241,7 +271,7 @@ export async function researchAndDraft(apiKey: string | undefined, req: Research
 
 const DraftSchema = z.object({ brief: BriefSchema, ...EmailFields })
 
-export async function draft(apiKey: string | undefined, req: DraftRequest): Promise<Result<DraftResult>> {
+export async function draft(cfg: ClaudeConfig, req: DraftRequest): Promise<Result<DraftResult>> {
   return guard(async () => {
     const prompt = [
       `<campaign_notes>\n${req.campaignNotes || '(none)'}\n</campaign_notes>`,
@@ -256,7 +286,7 @@ export async function draft(apiKey: string | undefined, req: DraftRequest): Prom
     ].join('\n\n')
     const result = await run(
       prompt,
-      baseOptions(apiKey, {
+      baseOptions(cfg, {
         systemPrompt: `You write first-contact outreach emails for the user, from research that's already been done. Also turn the research into a brief for the user to skim, and pick the best recipient.\n\n${WRITING_RULES}`,
         tools: [],
         effort: 'high',
@@ -269,15 +299,67 @@ export async function draft(apiKey: string | undefined, req: DraftRequest): Prom
   })
 }
 
+// ------------------------------------------------------ connected tools
+
+// Connector tools (Slack, email…) come from the user's Claude account and
+// can do anything, so only ones that look read-only by name are allowed.
+const READ_WORDS = /^(search|read|get|list|fetch|find|query|view|lookup|retrieve|describe|show|open)$/
+const WRITE_WORDS =
+  /^(send|post|create|delete|update|write|reply|archive|upload|schedule|add|remove|set|draft|move|complete|uncomplete|rsvp|react|edit|invite|share|publish|forward|mark|manage|import|export|restart|call|run|bulk)$/
+export function isReadOnlyTool(name: string) {
+  const words = name.toLowerCase().split(/[_\-\s]+/)
+  return words.some((w) => READ_WORDS.test(w)) && !words.some((w) => WRITE_WORDS.test(w))
+}
+
+// "mcp__claude_ai_Slack__slack_search_public" → "Slack"
+const connectorName = (tool: string) =>
+  tool
+    .split('__')[1]
+    ?.replace(/^claude_ai_/, '')
+    .replace(/_/g, ' ') ?? tool
+
+const WEB_TOOLS = ['WebSearch', 'WebFetch', 'ToolSearch']
+
+// Loads the user's claude.ai connectors and sends every tool call through
+// canUseTool: the web tools and `allowed` (Inroad's own tools) go through,
+// connector tools only if they look read-only.
+function readOnlyConnectors(allowed: string[] = []): Partial<Options> {
+  return {
+    tools: WEB_TOOLS,
+    permissionMode: 'default',
+    settings: { disableClaudeAiConnectors: false },
+    canUseTool: async (toolName, input) =>
+      WEB_TOOLS.includes(toolName) || allowed.includes(toolName) || (toolName.startsWith('mcp__') && isReadOnlyTool(toolName.split('__').at(-1) ?? ''))
+        ? { behavior: 'allow', updatedInput: input }
+        : { behavior: 'deny', message: 'Inroad only lets you read and search here, not change anything.' },
+  }
+}
+
+// A progress line for a web or connector tool call, if it's worth showing.
+function toolStep(m: SDKMessage): string[] {
+  if (m.type !== 'assistant') return []
+  const steps: string[] = []
+  for (const block of m.message.content) {
+    if (block.type !== 'tool_use') continue
+    const input = block.input as { query?: string; url?: string }
+    if (block.name === 'WebSearch' && input.query) steps.push(`Searched the web for “${input.query}”`)
+    else if (block.name === 'WebFetch' && input.url) steps.push(`Read ${input.url.replace(/^https?:\/\//, '')}`)
+    else if (block.name.startsWith('mcp__') && !block.name.startsWith('mcp__email__')) steps.push(`Checked ${connectorName(block.name)}`)
+  }
+  return steps
+}
+
 // -------------------------------------------------------------------- chat
 
 const CHAT_SYSTEM = `You help the user refine one outreach email. You can see the email, the research brief, the campaign notes, any email format and instructions for this organisation, and the user's voice. Keep the email within the format and instructions unless the user asks otherwise.
 
 The email body is markdown, exactly as stored: ${MARKDOWN} Links and formatting are part of the text you see and can change.
 
-To change the email, call the propose_edit tool: quote the exact text to replace (copied verbatim from the subject or body, long enough to be unique, within a single paragraph) and give the replacement. To delete something, quote it with a few surrounding words and leave those words in the replacement. Each call becomes a suggestion the user can accept or reject, so prefer a few focused edits over rewriting everything, and stay in the user's voice. When the user asks what you think, wants something checked, or asks why something is there, call add_comment to pin your answer to the phrase it's about rather than only describing it in your reply. Don't repeat comments the email already has. Use WebSearch only if the user asks for something the brief doesn't cover. Keep your messages short.`
+The user may point at a passage they highlighted in the email; it's quoted with their message. Read it as "this part", and keep any edits to it unless they ask for more.
 
-export async function chat(apiKey: string | undefined, req: ChatRequest, emit: Emit): Promise<Result<ChatResult>> {
+To change the email, call the propose_edit tool: quote the exact text to replace (copied verbatim from the subject or body, long enough to be unique, within a single paragraph) and give the replacement. To delete something, quote it with a few surrounding words and leave those words in the replacement. Each call becomes a suggestion the user can accept or reject, so prefer a few focused edits over rewriting everything, and stay in the user's voice. When the user asks what you think, wants something checked, or asks why something is there, call add_comment to pin your answer to the phrase it's about rather than only describing it in your reply. Don't repeat comments the email already has. If the user asks for something the brief doesn't cover, look it up: WebSearch and WebFetch for the web, and their connected tools (Slack, email, docs, notes…) for anything about their own work or contacts. Only read and search with those tools; never send, post, create or change anything. Keep your messages short.`
+
+export async function chat(cfg: ClaudeConfig, req: ChatRequest, emit: Emit, abort?: AbortController): Promise<Result<ChatResult>> {
   return guard(async () => {
     const proposals: ProposedEdit[] = []
     // The tool doesn't edit anything itself: it records a suggestion for the
@@ -339,34 +421,44 @@ export async function chat(apiKey: string | undefined, req: ChatRequest, emit: E
       ? `<conversation_so_far>\n${req.history.map((m) => `${m.role === 'user' ? 'User' : 'You'}: ${m.text}`).join('\n\n')}\n</conversation_so_far>\n\n`
       : ''
 
+    const message = req.quote?.trim() ? `<highlighted_passage>\n${req.quote.trim()}\n</highlighted_passage>\n\nUser: ${req.message}` : `User: ${req.message}`
+
     let text = ''
-    const result = await run(
-      `${context}\n\n${transcript}User: ${req.message}`,
-      baseOptions(apiKey, {
-        systemPrompt: CHAT_SYSTEM,
-        tools: ['WebSearch'],
-        mcpServers: { email: editor },
-        allowedTools: ['WebSearch', 'mcp__email__propose_edit', 'mcp__email__add_comment'],
-        effort: 'medium',
-        maxTurns: 12,
-        includePartialMessages: true,
-      }),
-      (m) => {
-        // Stream Claude's reply text into the chat as it's written. Text
-        // either side of a tool call arrives as separate blocks.
-        if (m.type !== 'stream_event') return
-        const e = m.event
-        const chunk =
-          e.type === 'content_block_start' && e.content_block.type === 'text' && text
-            ? '\n\n'
-            : e.type === 'content_block_delta' && e.delta.type === 'text_delta'
-              ? e.delta.text
-              : ''
-        if (!chunk) return
-        text += chunk
-        emit({ jobId: req.jobId, kind: 'delta', text: chunk })
-      },
-    )
+    let result
+    try {
+      result = await run(
+        `${context}\n\n${transcript}${message}`,
+        baseOptions(cfg, {
+          systemPrompt: CHAT_SYSTEM,
+          mcpServers: { email: editor },
+          ...readOnlyConnectors(['mcp__email__propose_edit', 'mcp__email__add_comment']),
+          effort: 'medium',
+          maxTurns: 16,
+          includePartialMessages: true,
+          abortController: abort,
+        }),
+        (m) => {
+          for (const step of toolStep(m)) emit({ jobId: req.jobId, kind: 'step', text: step })
+          // Stream Claude's reply text into the chat as it's written. Text
+          // either side of a tool call arrives as separate blocks.
+          if (m.type !== 'stream_event') return
+          const e = m.event
+          const chunk =
+            e.type === 'content_block_start' && e.content_block.type === 'text' && text
+              ? '\n\n'
+              : e.type === 'content_block_delta' && e.delta.type === 'text_delta'
+                ? e.delta.text
+                : ''
+          if (!chunk) return
+          text += chunk
+          emit({ jobId: req.jobId, kind: 'delta', text: chunk })
+        },
+      )
+    } catch (err) {
+      // Stopped by the user: keep what was written and suggested so far.
+      if (abort?.signal.aborted) return { text: text.trim(), proposals, comments, stopped: true }
+      throw err
+    }
     return { text: text.trim() || result.result.trim(), proposals, comments }
   })
 }
@@ -378,11 +470,11 @@ const VoiceSchema = z.object({
   remove: z.array(z.string()).describe('Existing notes that the edits clearly contradict, quoted exactly.'),
 })
 
-export async function learnVoice(apiKey: string | undefined, req: VoiceLearnRequest): Promise<Result<VoiceLearnResult>> {
+export async function learnVoice(cfg: ClaudeConfig, req: VoiceLearnRequest): Promise<Result<VoiceLearnResult>> {
   return guard(async () => {
     const result = await run(
       `<existing_notes voice="${req.voiceName}">\n${req.notes.map((n) => `- ${n}`).join('\n') || '(none)'}\n</existing_notes>\n\n<claude_draft>\n${req.draft}\n</claude_draft>\n\n<as_saved>\n${req.final}\n</as_saved>`,
-      baseOptions(apiKey, {
+      baseOptions(cfg, {
         systemPrompt: `You maintain a short style guide describing how one person writes outreach emails. You're given Claude's draft and the version they actually saved.\n\nExtract only general, reusable preferences: tone, length, structure, openers and sign-offs, words or phrases they add or avoid. Ignore edits about this particular organisation's facts. Don't repeat anything the existing notes already say. If nothing general changed, return empty lists.`,
         tools: [],
         effort: 'low',
@@ -397,23 +489,6 @@ export async function learnVoice(apiKey: string | undefined, req: VoiceLearnRequ
 }
 
 // ------------------------------------------------------- event lookup
-
-// Connector tools (Slack, email…) come from the user's Claude account and
-// can do anything, so only ones that look read-only by name are allowed.
-const READ_WORDS = /^(search|read|get|list|fetch|find|query|view|lookup|retrieve|describe|show|open)$/
-const WRITE_WORDS =
-  /^(send|post|create|delete|update|write|reply|archive|upload|schedule|add|remove|set|draft|move|complete|uncomplete|rsvp|react|edit|invite|share|publish|forward|mark|manage|import|export|restart|call|run|bulk)$/
-export function isReadOnlyTool(name: string) {
-  const words = name.toLowerCase().split(/[_\-\s]+/)
-  return words.some((w) => READ_WORDS.test(w)) && !words.some((w) => WRITE_WORDS.test(w))
-}
-
-// "mcp__claude_ai_Slack__slack_search_public" → "Slack"
-const connectorName = (tool: string) =>
-  tool
-    .split('__')[1]
-    ?.replace(/^claude_ai_/, '')
-    .replace(/_/g, ' ') ?? tool
 
 const EventSchema = z.object({
   facts: z
@@ -447,12 +522,12 @@ const asDetails = (facts: { label: string; value: string }[]) =>
     .map((f) => `${f.label.trim()}: ${f.value.trim()}`)
     .join('\n')
 
-export async function lookupEvent(apiKey: string | undefined, req: EventLookupRequest, emit: Emit): Promise<Result<EventLookupResult>> {
+export async function lookupEvent(cfg: ClaudeConfig, req: EventLookupRequest, emit: Emit, abort?: AbortController): Promise<Result<EventLookupResult>> {
   return guard(async () => {
     emit({ jobId: req.jobId, kind: 'step', text: `Looking for “${req.name}”` })
     const result = await run(
       `Event: ${req.name}${req.hint ? `\nWhat the user added: ${req.hint}` : ''}`,
-      baseOptions(apiKey, {
+      baseOptions(cfg, {
         systemPrompt: `The user organises the event named below and is setting up an app that writes outreach emails (sponsors, venues, partners) for it. Find what's known about the event so they don't have to type it out.
 
 Look in their connected tools first: search their Slack, email, docs, notes or task manager for the event name and read the most relevant threads or documents. Then check the web for a public page. Only use tools to read and search; never send, post, create or change anything. Stop once you have a clear picture; a dozen or so tool calls is plenty.
@@ -460,28 +535,14 @@ Look in their connected tools first: search their Slack, email, docs, notes or t
 Only report what you found. If sources disagree on something that matters, don't explain it in the facts: ask the user instead. If you find nothing, return no facts and ask what the event is.
 
 ${EVENT_EXCLUDE}`,
-        tools: ['WebSearch', 'WebFetch', 'ToolSearch'],
-        // Every tool call comes to canUseTool: the built-ins above, plus
-        // connector tools only if they look read-only.
-        permissionMode: 'default',
-        settings: { disableClaudeAiConnectors: false },
-        canUseTool: async (toolName, input) =>
-          ['WebSearch', 'WebFetch', 'ToolSearch'].includes(toolName) || (toolName.startsWith('mcp__') && isReadOnlyTool(toolName.split('__').at(-1) ?? ''))
-            ? { behavior: 'allow', updatedInput: input }
-            : { behavior: 'deny', message: 'Inroad only lets you read and search here, not change anything.' },
+        ...readOnlyConnectors(),
         effort: 'medium',
         maxTurns: 30,
+        abortController: abort,
         ...structured(EventSchema),
       }),
       (m) => {
-        if (m.type !== 'assistant') return
-        for (const block of m.message.content) {
-          if (block.type !== 'tool_use') continue
-          const input = block.input as { query?: string; url?: string }
-          if (block.name === 'WebSearch' && input.query) emit({ jobId: req.jobId, kind: 'step', text: `Searched the web for “${input.query}”` })
-          else if (block.name === 'WebFetch' && input.url) emit({ jobId: req.jobId, kind: 'step', text: `Read ${input.url.replace(/^https?:\/\//, '')}` })
-          else if (block.name.startsWith('mcp__')) emit({ jobId: req.jobId, kind: 'step', text: `Checked ${connectorName(block.name)}` })
-        }
+        for (const step of toolStep(m)) emit({ jobId: req.jobId, kind: 'step', text: step })
       },
     )
     const out = parseOutput(EventSchema, result.structured_output)
@@ -490,12 +551,13 @@ ${EVENT_EXCLUDE}`,
 }
 
 // Folds the user's answers into the event details, leaving the rest alone.
-export async function applyEventAnswers(apiKey: string | undefined, req: EventAnswersRequest): Promise<Result<{ details: string }>> {
+export async function applyEventAnswers(cfg: ClaudeConfig, req: EventAnswersRequest): Promise<Result<{ details: string }>> {
   return guard(async () => {
     const qa = req.answers.map((a) => `Q: ${a.question}\nA: ${a.answer}`).join('\n\n')
     const result = await run(
       `<event>${req.name}</event>\n\n<details>\n${req.details}\n</details>\n\n<answers>\n${qa}\n</answers>`,
-      baseOptions(apiKey, {
+      baseOptions(cfg, {
+        model: cfg.utilityModel,
         systemPrompt: `Update the event details with the user's answers to your questions. Change only what the answers affect: add or correct those facts in the same "Label: value" style, and keep every other line exactly as it is, including anything the user wrote themselves. Return the whole updated text.`,
         tools: [],
         effort: 'low',
@@ -513,12 +575,12 @@ const RulesSchema = z.object({
   notes: z.array(z.string()).describe('5–8 short, imperative style notes, most important first.'),
 })
 
-export async function writingRules(apiKey: string | undefined, req: WritingRulesRequest): Promise<Result<{ notes: string[] }>> {
+export async function writingRules(cfg: ClaudeConfig, req: WritingRulesRequest): Promise<Result<{ notes: string[] }>> {
   return guard(async () => {
     const emails = req.emails.map((e, i) => `<email index="${i + 1}">\n${e.trim()}\n</email>`).join('\n')
     const result = await run(
       emails,
-      baseOptions(apiKey, {
+      baseOptions(cfg, {
         systemPrompt: `These are emails one person wrote. Write a short style guide another writer could follow to sound like them in outreach emails: tone and formality, length and paragraph shape, how they open and sign off, sentence habits, words and phrases they use or avoid, spelling conventions (e.g. Australian or US). Only include what the emails actually show; ignore their specific content.`,
         tools: [],
         effort: 'medium',
@@ -544,13 +606,13 @@ const OrganisationsSchema = z.object({
 
 // Turns whatever the user typed ("Canva and Atlassian, both formal. PCBWay —
 // mention Campfire…") into a list of organisations with their own notes.
-export async function parseOrganisations(apiKey: string | undefined, text: string): Promise<Result<ParsedOrganisation[]>> {
+export async function parseOrganisations(cfg: ClaudeConfig, text: string): Promise<Result<ParsedOrganisation[]>> {
   return guard(async () => {
     const result = await run(
       `<text>\n${text}\n</text>`,
-      baseOptions(apiKey, {
-        // A quick extraction job; a smaller model is plenty.
-        model: 'haiku',
+      baseOptions(cfg, {
+        // A quick extraction job: the utility model is plenty.
+        model: cfg.utilityModel,
         systemPrompt: `The user is listing organisations they want to email, in their own words. List each organisation once, in the order given.
 
 For each, keep any website they gave, and put everything they said about it in "note" as a short instruction in their words (e.g. "Mention they sponsored Campfire; ask for about 40 badges"). If something applies to several organisations ("both formal", "all of these are local"), add it to each one's note, reworded to stand alone ("Formal", not "Both formal"). Notes are instructions for writing or researching the email, so leave out the user's thinking aloud about whether to include one ("maybe", "not sure about this one"). A website alone isn't a note. Don't add anything they didn't say.`,
@@ -568,9 +630,9 @@ For each, keep any website they gave, and put everything they said about it in "
 // ------------------------------------------------------------- connection
 
 // A tiny request to check Claude is reachable with the current sign-in or key.
-export async function testClaude(apiKey: string | undefined): Promise<Result<{ via: 'api-key' | 'claude-login' }>> {
+export async function testClaude(cfg: ClaudeConfig): Promise<Result<{ via: 'api-key' | 'claude-login' }>> {
   return guard(async () => {
-    await run('Reply with just: OK', baseOptions(apiKey, { tools: [], effort: 'low', maxTurns: 1 }))
-    return { via: apiKey ? ('api-key' as const) : ('claude-login' as const) }
+    await run('Reply with just: OK', baseOptions(cfg, { tools: [], effort: 'low', maxTurns: 1 }))
+    return { via: cfg.apiKey ? ('api-key' as const) : ('claude-login' as const) }
   })
 }
