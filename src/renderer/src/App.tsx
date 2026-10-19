@@ -33,7 +33,7 @@ import { usePanelRef } from 'react-resizable-panels'
 import { toast } from 'sonner'
 import { AgentProvider } from './agent'
 import { CommandPalette, ShortcutsDialog, type PaletteCommand } from './components/CommandPalette'
-import { AddCompaniesDialog } from './components/AddCompaniesDialog'
+import { AddCompaniesPage } from './components/AddCompaniesPage'
 import { Editor } from './components/Editor'
 import { activeChat, RightPanel, type Tab } from './components/RightPanel'
 import type { TrashItem } from './components/TrashView'
@@ -108,8 +108,8 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
   const [campaigns, setCampaigns] = useState(saved.campaigns)
   const [voices, setVoices] = useState(saved.voices)
   const [snippets, setSnippets] = useState<Snippet[]>(saved.snippets ?? [])
-  // The email workspace, or Settings (which swaps in its own sidebar).
-  const [view, setView] = useState<'email' | 'settings'>('email')
+  // The email workspace, adding organisations, or Settings (which swaps in its own sidebar).
+  const [view, setView] = useState<'email' | 'add' | 'settings'>('email')
   const [settingsPage, setSettingsPage] = useState<SettingsPage>({ kind: 'mailbox' })
   const [campaignId, setCampaignId] = useState(saved.campaignId)
   const [selectedId, setSelectedId] = useState(saved.selectedId)
@@ -126,7 +126,9 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
   const [tab, setTab] = useState<Tab>('chat')
   const [filter, setFilter] = useState<Filter>('all')
   const [showDiff, setShowDiff] = useState(false)
-  const [adding, setAdding] = useState(false)
+  // What's typed on the Add page, kept while you look elsewhere.
+  const [addText, setAddText] = useState('')
+  const openAdd = () => setView('add')
   const [palette, setPalette] = useState(false)
   const [help, setHelp] = useState(false)
   const [theme, setTheme] = useState<Theme>(loadTheme)
@@ -174,7 +176,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
   const selected = inCampaign.find((p) => p.id === selectedId)
   const shown = inCampaign.filter((p) => inFilter[filter](p.status))
   const update = (id: string, fn: (p: Prospect) => Prospect) => setProspects((ps) => ps.map((p) => (p.id === id ? fn(p) : p)))
-  const overlayOpen = adding || palette || help || (!rightDocks && rightOpen)
+  const overlayOpen = palette || help || (!rightDocks && rightOpen)
   // Latest state for callbacks that run later (timers, undo closures).
   const prospectsRef = useRef(prospects)
   prospectsRef.current = prospects
@@ -1013,7 +1015,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
   // ⌘N: a new chat from the chat panel, otherwise add organisations.
   const newThing = (el: HTMLElement) => {
     if (el.closest?.('#side-panel') && selected?.originalBody) newChat()
-    else setAdding(true)
+    else openAdd()
   }
 
   const replying = !!selected && !!activeChat(selected)?.messages.some((m) => m.pending)
@@ -1060,6 +1062,15 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
         return
       }
 
+      // Adding organisations: Esc goes back to the email; ⌘, still opens Settings.
+      if (view === 'add') {
+        if (mod && e.key === ',') {
+          e.preventDefault()
+          openSettings()
+        } else if (e.key === 'Escape' && !typing) setView('email')
+        return
+      }
+
       // Modifier shortcuts work everywhere, including mid-typing, since most of
       // the time focus is in the email or the chat box.
       if (mod) {
@@ -1099,7 +1110,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
         '/': openChat,
         a: () => resolveNextProposal(true),
         x: () => resolveNextProposal(false),
-        c: () => setAdding(true),
+        c: () => openAdd(),
         Backspace: () => view === 'email' && selected && deleteProspect(selected.id),
         Delete: () => view === 'email' && selected && deleteProspect(selected.id),
         '?': () => setHelp(true),
@@ -1294,7 +1305,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
       shortcut: '⌘⇧\\',
       run: () => setRightOpen((v) => !v),
     },
-    { id: 'add', group: 'Actions', label: 'Add to campaign', icon: <Plus />, shortcut: '⌘N', run: () => setAdding(true) },
+    { id: 'add', group: 'Actions', label: 'Add to campaign', icon: <Plus />, shortcut: '⌘N', run: () => openAdd() },
     {
       id: 'theme',
       group: 'Actions',
@@ -1409,7 +1420,8 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     const apply = () => setProspects((ps) => [...ps.filter((p) => !ids.includes(p.id)), ...added])
     apply()
     record(`Added ${added.length} to ${campaign.name}`, undefined, () => setProspects((ps) => ps.filter((p) => !ids.includes(p.id))), apply)
-    setAdding(false)
+    // Show the first one researching.
+    select(added[0].id)
   }
 
   // A suggestion as Claude will see it in the transcript of earlier turns.
@@ -1516,7 +1528,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
       examples: [...(voice.examples ?? []), ...r.emails.map((final) => ({ id: crypto.randomUUID(), at: Date.now(), final }))],
     })
     setOnboarded(true)
-    setAdding(true)
+    openAdd()
   }
 
   const startFresh = () => {
@@ -1610,7 +1622,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
             <Flag /> Write campaign notes
           </Button>
         )}
-        <Button variant={campaign.notes.trim() ? 'default' : 'outline'} onClick={() => setAdding(true)}>
+        <Button variant={campaign.notes.trim() ? 'default' : 'outline'} onClick={() => openAdd()}>
           <Plus /> Add to campaign
         </Button>
       </div>
@@ -1706,7 +1718,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
               onEditVoices={editVoices}
               selectedId={selectedId}
               onSelect={select}
-              onAdd={() => setAdding(true)}
+              onAdd={() => openAdd()}
               filter={filter}
               onFilter={setFilter}
               theme={theme}
@@ -1715,7 +1727,17 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
               onShowKeys={() => setHelp(true)}
             />
             <SidebarInset className="min-w-0 overflow-hidden">
-              {rightDocks && selected && view === 'email' ? (
+              {view === 'add' ? (
+                <AddCompaniesPage
+                  campaign={campaign}
+                  voiceName={voice.name}
+                  text={addText}
+                  onText={setAddText}
+                  onAdd={addProspects}
+                  onCancel={() => setView('email')}
+                  onResearchOnly={(researchOnly) => updateCampaign(campaign.id, { researchOnly })}
+                />
+              ) : rightDocks && selected && view === 'email' ? (
                 <ResizablePanelGroup
                   orientation="horizontal"
                   className="h-full"
@@ -1762,7 +1784,6 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
         )}
       </SidebarProvider>
 
-      <AddCompaniesDialog open={adding} onOpenChange={setAdding} campaign={campaign} voiceName={voice.name} onAdd={addProspects} />
       <CommandPalette open={palette} onOpenChange={setPalette} commands={commands} />
       <ShortcutsDialog open={help} onOpenChange={setHelp} />
       <Toaster theme={theme} position="bottom-center" />
