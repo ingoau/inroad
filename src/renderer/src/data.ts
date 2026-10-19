@@ -32,6 +32,18 @@ export interface ChatMsg {
   error?: boolean
 }
 
+// Whether the email can be edited, chatted about and saved: there's a draft,
+// or (research-only campaigns) research is done and the user writes it.
+export const hasEmail = (p: Prospect) => p.status === 'researched' || p.status === 'drafted' || p.status === 'edited' || p.status === 'saved'
+
+// The status after the body changes. With no AI draft to compare against, an
+// empty email is still just "researched".
+export function statusAfter(p: Prospect, body: string): Status {
+  if (p.status === 'saved') return 'saved'
+  if (!p.originalBody) return body.trim() ? 'edited' : 'researched'
+  return body !== p.originalBody ? 'edited' : 'drafted'
+}
+
 // One of Claude's comments on the email, pinned to a phrase.
 export interface Comment extends EmailComment {
   id: string
@@ -117,7 +129,9 @@ export interface Campaign {
   attachments: Attachment[]
   // Which voice profile drafts in this campaign are written in.
   voiceId: string
-  // Research and write the brief only; emails are drafted one at a time on request.
+  // Research and write the brief only; you write each email, or have the AI
+  // draft it on request. New campaigns start this way; older saves without
+  // the field kept drafting automatically.
   researchOnly?: boolean
   deletedAt?: number
 }
@@ -177,6 +191,7 @@ export const firstRunCampaign = (folderId: string, voiceId: string): Campaign =>
   notes: '',
   attachments: [],
   voiceId,
+  researchOnly: true,
 })
 
 export const firstRunVoice = (): Voice => ({

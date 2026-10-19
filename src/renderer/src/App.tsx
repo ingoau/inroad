@@ -44,7 +44,9 @@ import { statusStyle } from './components/status'
 import { useBreakpoint } from './layout'
 import {
   MAX_VOICE_EXAMPLES,
+  hasEmail,
   snippetsFor,
+  statusAfter,
   type Attachment,
   type Campaign,
   type ChatMsg,
@@ -74,7 +76,6 @@ const needsReview = (p: Prospect) => p.status === 'drafted' || p.status === 'edi
 const stamp = (comments: EmailComment[], by: Comment['by']): Comment[] => comments.map((c) => ({ ...c, id: crypto.randomUUID(), by, at: Date.now() }))
 
 const hasText = (p: Prospect | undefined, text: string) => !!p && !!text && (p.subject.includes(text) || p.body.includes(text))
-const statusAfter = (p: Prospect, body: string): Prospect['status'] => (p.status === 'saved' ? 'saved' : body !== p.originalBody ? 'edited' : 'drafted')
 
 interface Toast {
   text: string
@@ -410,7 +411,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
   // New campaigns go in the open campaign's folder unless told otherwise.
   const createCampaign = (folderId = campaign.folderId) => {
     const id = crypto.randomUUID()
-    setCampaigns((cs) => [...cs, { id, folderId, name: '', notes: '', attachments: [], voiceId: campaign.voiceId }])
+    setCampaigns((cs) => [...cs, { id, folderId, name: '', notes: '', attachments: [], voiceId: campaign.voiceId, researchOnly: true }])
     setCampaignId(id)
     setView('email')
     return id
@@ -632,7 +633,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
   const selectChat = (chatId: string) => selected && update(selected.id, (p) => ({ ...p, activeChatId: chatId }))
 
   const newChat = () => {
-    if (!selected?.originalBody) return
+    if (!selected || !hasEmail(selected)) return
     const thread: ChatThread = { id: crypto.randomUUID(), title: 'New chat', createdAt: Date.now(), messages: [] }
     update(selected.id, (p) => ({ ...p, chats: [...p.chats, thread], activeChatId: thread.id }))
     setTab('chat')
@@ -688,11 +689,13 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
   const mailReady = !!settings?.mail && !!settings.hasMailPassword
 
   const save = () => {
-    if (!selected?.originalBody) return
+    if (!selected || !hasEmail(selected)) return
+    if (!selected.body.trim()) return notify({ text: 'Write the email first, or press ⌘R to have the AI draft it' })
     if (!mailReady)
       return notify({ text: 'Connect your mailbox to save drafts', action: { label: 'Open settings', run: () => openSettings({ kind: 'mailbox' }) } })
     const { id: pid, status: prev, company, draftRef: prevRef } = selected
-    const edited = selected.body !== selected.originalBody
+    // Only edits to an AI draft teach the voice; an email written from scratch has nothing to compare.
+    const edited = !!selected.originalBody && selected.body !== selected.originalBody
     const versionId = crypto.randomUUID()
     // This save's trip to the mailbox, so undo knows whether to cancel it or delete the draft.
     const sync: { committed: boolean; ref?: DraftRef } = { committed: false }
@@ -780,7 +783,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
 
   // Research-only campaigns: write the email for one organisation from its research.
   const writeDraft = async () => {
-    if (selected?.status !== 'researched' || regeneratingId || !window.api) return
+    if (!selected || !hasEmail(selected) || selected.originalBody || regeneratingId || !window.api) return
     const p = selected
     const pid = p.id
     setRegeneratingId(pid)
@@ -791,17 +794,19 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     const before = get(pid)
     if (!before) return
     const version: Version = { id: crypto.randomUUID(), label: 'AI draft', by: 'claude', at: Date.now(), markdown: md }
+    // Anything you'd written yourself stays in History.
+    const yours: Version[] = before.body.trim() ? [{ id: crypto.randomUUID(), label: 'Your edits', by: 'you', at: Date.now(), markdown: before.body }] : []
     const fresh = stamp(res.value.comments, 'draft')
     const apply = () =>
       update(pid, (q) => ({
         ...q,
-        status: 'drafted',
+        status: q.status === 'saved' ? 'saved' : 'drafted',
         brief: res.value.brief,
         subject: res.value.subject,
         body: md,
         originalBody: md,
         to: q.to.length ? q.to : res.value.to ? [res.value.to] : [],
-        versions: [...q.versions.filter((v) => v.id !== version.id), version],
+        versions: [...q.versions.filter((v) => v.id !== version.id && !yours.some((y) => y.id === v.id)), ...yours, version],
         comments: [...(q.comments ?? []).filter((c) => !fresh.some((f) => f.id === c.id)), ...fresh],
       }))
     apply()
@@ -815,7 +820,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
   }
 
   const regenerate = async () => {
-    if (selected?.status === 'researched') return writeDraft()
+    if (selected && hasEmail(selected) && !selected.originalBody) return writeDraft()
     if (!selected?.originalBody || regeneratingId || !window.api) return
     const p = selected
     const pid = p.id
@@ -961,7 +966,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
   }
 
   const editBody = () => {
-    if (!selected?.originalBody) return
+    if (!selected || !hasEmail(selected)) return
     setShowDiff(false)
     focusLater('email-body')
   }
@@ -1008,13 +1013,13 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     const editor = currentEditor()
     const sel = editor?.state.selection
     if (editor?.isFocused && sel && !sel.empty) return askAbout(editor.state.doc.textBetween(sel.from, sel.to, '\n'))
-    if (document.activeElement?.id === 'chat-input' && selected?.originalBody) editBody()
+    if (document.activeElement?.id === 'chat-input' && selected && hasEmail(selected)) editBody()
     else openChat()
   }
 
   // ⌘N: a new chat from the chat panel, otherwise add organisations.
   const newThing = (el: HTMLElement) => {
-    if (el.closest?.('#side-panel') && selected?.originalBody) newChat()
+    if (el.closest?.('#side-panel') && selected && hasEmail(selected)) newChat()
     else openAdd()
   }
 
@@ -1438,7 +1443,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
   // A passage of the email attached to the next chat message (highlight + Ask AI, or ⌘/).
   const [chatQuote, setChatQuote] = useState<{ pid: string; text: string } | null>(null)
   const askAbout = (text: string) => {
-    if (!selected?.originalBody || !text.trim()) return
+    if (!selected || !hasEmail(selected) || !text.trim()) return
     setChatQuote({ pid: selected.id, text: text.trim() })
     openChat()
   }
@@ -1613,7 +1618,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
       <h2 className="font-heading text-2xl font-semibold">Nothing in {campaign.name || 'this campaign'} yet</h2>
       <p className="max-w-md text-muted-foreground">
         {campaign.notes.trim()
-          ? 'Add the organisations you want to reach. The AI researches each one and drafts an email.'
+          ? `Add the organisations you want to reach. The AI researches each one${campaign.researchOnly ? '' : ' and drafts an email'}.`
           : `Start with the campaign notes: what you’re asking for, the details the AI should mention, and what to look for when researching. Then add the organisations you want to reach.`}
       </p>
       <div className="flex gap-2">

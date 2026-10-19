@@ -74,14 +74,14 @@ export function CampaignPage({
             </Select>
           </SettingsRow>
         )}
-        <SettingsRow title="Drafting" description="Research-only campaigns get a brief for each organisation, and you write emails one at a time when you want them.">
+        <SettingsRow title="Drafting" description="Research only: each organisation gets a brief and an empty email for you to write, or press ⌘R to have the AI draft it. Otherwise the AI drafts every email as soon as the research is done.">
           <Select value={campaign.researchOnly ? 'research' : 'draft'} onValueChange={(v) => onUpdate({ researchOnly: v === 'research' })}>
             <SelectTrigger className="w-64">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="draft">Research and draft emails</SelectItem>
               <SelectItem value="research">Research only</SelectItem>
+              <SelectItem value="draft">Research and draft emails</SelectItem>
             </SelectContent>
           </Select>
         </SettingsRow>

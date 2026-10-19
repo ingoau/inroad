@@ -17,7 +17,6 @@ import {
   Clock,
   PenLine,
   ExternalLink,
-  FileSearch,
   FileText,
   GitCompare,
   History,
@@ -27,6 +26,7 @@ import {
   Paperclip,
   RefreshCw,
   Search,
+  Sparkles,
   Square,
   Trash2,
   X,
@@ -34,7 +34,7 @@ import {
   MessageSquareText,
 } from 'lucide-react'
 import { useMemo, useState, type CSSProperties, type ReactNode } from 'react'
-import type { Attachment, Proposal, Prospect, Version } from '../data'
+import { hasEmail, statusAfter, type Attachment, type Proposal, type Prospect, type Version } from '../data'
 import { changeCount } from '../diff'
 import { plainText } from '../markdown'
 import { DiffText } from './DiffText'
@@ -83,7 +83,9 @@ export function Editor(props: Props) {
   const { prospect: p, queuePosition, attachments, showDiff, onToggleDiff, regenerating, onChange, onSave, onRetry } = props
   const [newTo, setNewTo] = useState('')
   const [website, setWebsite] = useState('')
+  // Research-only campaigns have an email to write but no AI draft yet.
   const hasDraft = !!p.originalBody
+  const editable = hasEmail(p)
   // Diffs compare the markdown itself, so link and formatting changes show too.
   const originalText = p.originalBody
   const bodyText = p.body
@@ -126,11 +128,7 @@ export function Editor(props: Props) {
     props.onProposal(msgId, propId, accept)
   }
 
-  const setBody = (body: string) =>
-    onChange({
-      body,
-      status: p.status === 'saved' ? 'saved' : body === p.originalBody ? 'drafted' : 'edited',
-    })
+  const setBody = (body: string) => onChange({ body, status: statusAfter(p, body) })
 
   return (
     <div className="@container flex h-full min-w-0 flex-col bg-background">
@@ -178,20 +176,6 @@ export function Editor(props: Props) {
             </Notice>
           )}
           {p.status === 'researching' && <Researching prospect={p} onStop={props.onStopResearch} />}
-          {p.status === 'researched' && (
-            <Notice icon={<FileSearch />} title="Researched">
-              <p className="mb-3">This campaign is research-only, so there’s no email yet. The brief has what was found.</p>
-              <div className="flex gap-2">
-                <Button onClick={() => props.onPanel('brief')} variant="outline">
-                  <FileText /> Show brief
-                </Button>
-                <Button onClick={props.onRegenerate} disabled={regenerating}>
-                  {regenerating ? <Loader2 className="animate-spin" /> : <PenLine />} {regenerating ? 'Writing…' : 'Write draft'}
-                  {!regenerating && <ButtonKeys keys="⌘ R" primary />}
-                </Button>
-              </div>
-            </Notice>
-          )}
           {p.status === 'failed' && (
             <Notice icon={<Search />} title="Research didn’t finish">
               <p className="mb-3">{p.error}</p>
@@ -217,7 +201,7 @@ export function Editor(props: Props) {
             </Notice>
           )}
 
-          {hasDraft && (
+          {editable && (
             <>
               <div className="text-sm">
                 <Field label="From">
@@ -345,9 +329,11 @@ export function Editor(props: Props) {
                   </Badge>
                 ))}
                 <span className="text-xs text-muted-foreground">
-                  {changes > 0
-                    ? `${changes} change${changes === 1 ? '' : 's'} from the AI draft. Saving teaches your voice profile from them.`
-                    : 'The AI draft, unedited.'}
+                  {!hasDraft
+                    ? 'No AI draft yet. Write it here, or press ⌘R to have the AI draft it from the research.'
+                    : changes > 0
+                      ? `${changes} change${changes === 1 ? '' : 's'} from the AI draft. Saving teaches your voice profile from them.`
+                      : 'The AI draft, unedited.'}
                 </span>
               </div>
             </>
@@ -355,7 +341,7 @@ export function Editor(props: Props) {
         </div>
       </div>
 
-      {hasDraft && (
+      {editable && (
         <footer className="flex h-12 shrink-0 items-center gap-1 border-t px-3">
           <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
             <HistoryMenu
@@ -364,18 +350,29 @@ export function Editor(props: Props) {
               onRestore={props.onRestoreVersion}
               onDelete={props.onDeleteVersion}
             />
-            <Hint label="Write a fresh draft from the same brief" keys="⌘ R" side="top">
-              <Button variant="ghost" size="sm" onClick={props.onRegenerate} disabled={regenerating}>
-                <RefreshCw className={cn(regenerating && 'animate-spin')} />
-                <span className="@max-md:hidden">{regenerating ? 'Regenerating…' : 'Regenerate'}</span>
-              </Button>
-            </Hint>
-            <Hint label="Compare with the AI draft" keys="⌘ D" side="top">
-              <Button variant={showDiff ? 'secondary' : 'ghost'} size="sm" onClick={onToggleDiff} disabled={changes === 0}>
-                <GitCompare /> <span className="@max-md:hidden">Changes</span>
-                {changes > 0 && <span className="text-muted-foreground">{changes}</span>}
-              </Button>
-            </Hint>
+            {hasDraft ? (
+              <Hint label="Write a fresh draft from the same brief" keys="⌘ R" side="top">
+                <Button variant="ghost" size="sm" onClick={props.onRegenerate} disabled={regenerating}>
+                  <RefreshCw className={cn(regenerating && 'animate-spin')} />
+                  <span className="@max-md:hidden">{regenerating ? 'Regenerating…' : 'Regenerate'}</span>
+                </Button>
+              </Hint>
+            ) : (
+              <Hint label="Have the AI draft this email from the research" keys="⌘ R" side="top">
+                <Button variant="ghost" size="sm" onClick={props.onRegenerate} disabled={regenerating}>
+                  {regenerating ? <Loader2 className="animate-spin" /> : <Sparkles />}
+                  <span className="@max-md:hidden">{regenerating ? 'Writing…' : 'Write with AI'}</span>
+                </Button>
+              </Hint>
+            )}
+            {hasDraft && (
+              <Hint label="Compare with the AI draft" keys="⌘ D" side="top">
+                <Button variant={showDiff ? 'secondary' : 'ghost'} size="sm" onClick={onToggleDiff} disabled={changes === 0}>
+                  <GitCompare /> <span className="@max-md:hidden">Changes</span>
+                  {changes > 0 && <span className="text-muted-foreground">{changes}</span>}
+                </Button>
+              </Hint>
+            )}
           </div>
           <Button size="sm" onClick={onSave}>
             {p.status === 'saved' ? <Check /> : <Inbox />}

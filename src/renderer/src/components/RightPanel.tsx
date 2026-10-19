@@ -36,7 +36,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import type { ChatThread, Prospect, Recipient } from '../data'
+import { hasEmail, type ChatThread, type Prospect, type Recipient } from '../data'
 import { DiffText } from './DiffText'
 import { ButtonKeys, Hint } from './hint'
 
@@ -118,7 +118,7 @@ function NoteField({ prospect: p, onNote }: { prospect: Prospect; onNote: (note:
         placeholder={`Anything the AI should say or look for with ${p.company}`}
         className="min-h-16 resize-none bg-background text-sm"
       />
-      {p.note?.trim() && p.originalBody && <p className="mt-1.5 text-xs text-muted-foreground">Changed it? Regenerate (⌘R) or ask in chat to apply it.</p>}
+      {p.note?.trim() && hasEmail(p) && <p className="mt-1.5 text-xs text-muted-foreground">Changed it? Regenerate (⌘R) or ask in chat to apply it.</p>}
     </Section>
   )
 }
@@ -229,7 +229,7 @@ function ChatView({ prospect: p, onProposal, onRevertProposal: onRevert, onSend,
   }, [messages.length, messages.at(-1)?.text.length, thread?.id])
   // The suggestion ⌘⇧↵ / ⌘⇧⌫ act on: the first one still pending in this chat.
   const nextId = messages.flatMap((m) => m.proposals ?? []).find((x) => x.state === 'pending')?.id
-  const ready = !!p.originalBody
+  const ready = hasEmail(p)
   const replying = messages.some((m) => m.pending)
 
   const send = () => {
@@ -280,7 +280,13 @@ function ChatView({ prospect: p, onProposal, onRevertProposal: onRevert, onSend,
       <ScrollArea className="min-h-0 flex-1 [&_[data-slot=scroll-area-viewport]>div]:block!">
         <div className="space-y-4 p-4 text-sm">
           {!ready && messages.length === 0 && <p className="text-muted-foreground">You can chat with the AI about {p.company} once its draft is ready.</p>}
-          {ready && messages.length === 0 && (
+          {ready && messages.length === 0 && !p.body.trim() && (
+            <div className="text-muted-foreground">
+              <Sparkles className="mb-2 size-4" />
+              Ask the AI about {p.company} or what the research found. To have it write the email, press ⌘R.
+            </div>
+          )}
+          {ready && messages.length === 0 && !!p.body.trim() && (
             <div className="text-muted-foreground">
               <Sparkles className="mb-2 size-4" />
               Ask the AI to change the email. Try:
@@ -295,7 +301,7 @@ function ChatView({ prospect: p, onProposal, onRevertProposal: onRevert, onSend,
           )}
           {messages.map((m) =>
             m.role === 'user' ? (
-              <div key={m.id} className="ml-auto w-fit max-w-[85%] rounded-lg bg-primary px-3 py-2 text-primary-foreground">
+              <div key={m.id} className="ml-auto w-fit max-w-[85%] rounded-lg bg-primary px-3 py-2 whitespace-pre-wrap text-primary-foreground">
                 {m.quote && <div className="mb-1.5 line-clamp-3 border-l-2 border-primary-foreground/40 pl-2 text-xs opacity-80">{m.quote}</div>}
                 {m.text}
               </div>

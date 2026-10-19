@@ -220,7 +220,7 @@ export function Onboarding({
           <h1 className="font-heading text-3xl font-semibold">Welcome to Inroad</h1>
           <p className="mt-3 max-w-md text-balance text-muted-foreground">
             Research and draft personalised outreach emails in bulk, in your own voice. Add the organisations you want to reach: the AI agent researches each
-            one, writes an email that sounds like you, and saves it to your Drafts folder for you to send.
+            one and helps you write an email that sounds like you, then saves it to your Drafts folder for you to send.
           </p>
           <Button size="lg" className="mt-8" autoFocus onClick={() => setConnecting(true)}>
             Get started <ArrowRight />

@@ -161,7 +161,7 @@ export function AddCompaniesPage({
           <div className="flex flex-wrap items-center gap-3 rounded-lg border bg-muted/30 px-3 py-2.5 text-sm">
             <span className="min-w-0 flex-1 text-muted-foreground">
               {campaign.researchOnly
-                ? 'Each one is researched from the folder’s context and this campaign’s notes. You write emails one at a time when you want them.'
+                ? 'Each one is researched from the folder’s context and this campaign’s notes. You write each email, or press ⌘R to have the AI draft it.'
                 : `Each one is researched and drafted from the folder’s context and this campaign’s notes, written in the “${voiceName}” voice.`}
             </span>
             <Select value={campaign.researchOnly ? 'research' : 'draft'} onValueChange={(v) => onResearchOnly(v === 'research')}>
@@ -169,8 +169,8 @@ export function AddCompaniesPage({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="draft">Research and draft</SelectItem>
                 <SelectItem value="research">Research only</SelectItem>
+                <SelectItem value="draft">Research and draft</SelectItem>
               </SelectContent>
             </Select>
           </div>
