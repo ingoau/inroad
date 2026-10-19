@@ -6,7 +6,6 @@ import { Textarea } from '@/components/ui/textarea'
 import { Mail, Paperclip, Plus, X } from 'lucide-react'
 import { useState } from 'react'
 import { MAX_VOICE_EXAMPLES, type Campaign, type Folder, type Voice } from '../../data'
-import { useAgentName } from '../../agent'
 import { FolderFields } from '../FolderFields'
 import { ButtonKeys } from '../hint'
 import { Intro } from './GeneralPages'
@@ -46,7 +45,6 @@ export function CampaignPage({
   onAttach: () => void
   onRemoveAttachment: (id: string) => void
 }) {
-  const agent = useAgentName()
   return (
     <>
       <SettingsSection>
@@ -76,6 +74,17 @@ export function CampaignPage({
             </Select>
           </SettingsRow>
         )}
+        <SettingsRow title="Drafting" description="Research-only campaigns get a brief for each organisation, and you write emails one at a time when you want them.">
+          <Select value={campaign.researchOnly ? 'research' : 'draft'} onValueChange={(v) => onUpdate({ researchOnly: v === 'research' })}>
+            <SelectTrigger className="w-64">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="draft">Research and draft emails</SelectItem>
+              <SelectItem value="research">Research only</SelectItem>
+            </SelectContent>
+          </Select>
+        </SettingsRow>
         <SettingsRow title="Voice" description="Whose writing style drafts in this campaign use.">
           <Select value={campaign.voiceId} onValueChange={(voiceId) => onUpdate({ voiceId })}>
             <SelectTrigger className="w-64">
@@ -96,7 +105,7 @@ export function CampaignPage({
         <SettingsRow
           stacked
           title="What you’re asking for"
-          description={`Who you’re contacting and what you’re asking them for, what ${agent} should look for when researching each one, and anything about tone. ${agent} reads this after the folder’s shared context.`}
+          description={`Who you’re contacting and what you’re asking them for, what the AI should look for when researching each one, and anything about tone. The AI reads this after the folder’s shared context.`}
         >
           <Textarea
             value={campaign.notes}
@@ -108,7 +117,7 @@ export function CampaignPage({
         <SettingsRow
           stacked
           title="Email format"
-          description="The structure and must-haves for every email in this campaign. Claude treats this as a requirement, where the notes above are context."
+          description="The structure and must-haves for every email in this campaign. The AI treats this as a requirement, where the notes above are context."
         >
           <Textarea
             value={campaign.format ?? ''}
@@ -122,7 +131,7 @@ export function CampaignPage({
       </SettingsSection>
 
       <SettingsSection title="Attachments">
-        <SettingsRow title="Attached to every email" description={`Added when each email is saved to Drafts. ${agent} knows what’s attached.`}>
+        <SettingsRow title="Attached to every email" description="Added when each email is saved to Drafts. The AI knows what’s attached.">
           <Button variant="outline" size="sm" onClick={onAttach} disabled={!window.api}>
             <Paperclip /> Attach file
           </Button>
@@ -161,7 +170,6 @@ export function VoicePage({
   onAddExample: (email: string) => void
   onDeleteExample: (id: string) => void
 }) {
-  const agent = useAgentName()
   const [note, setNote] = useState('')
   const [pasting, setPasting] = useState(false)
   const [email, setEmail] = useState('')
@@ -233,7 +241,7 @@ export function VoicePage({
 
       <SettingsSection
         title="Example emails"
-        description={`${agent} sees every email you paste here, plus your ${MAX_VOICE_EXAMPLES} most recent edited emails${learned.length ? ` (${learned.length} so far)` : ''}.`}
+        description={`The AI sees every email you paste here, plus your ${MAX_VOICE_EXAMPLES} most recent edited emails${learned.length ? ` (${learned.length} so far)` : ''}.`}
       >
         {pasted.map((e) => (
           <div key={e.id} className="group flex items-start gap-2 px-4 py-2.5 text-sm">

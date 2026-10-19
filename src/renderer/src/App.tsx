@@ -29,7 +29,7 @@ import {
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
 import { usePanelRef } from 'react-resizable-panels'
 import { toast } from 'sonner'
-import { AgentProvider, agentName } from './agent'
+import { AgentProvider } from './agent'
 import { CommandPalette, ShortcutsDialog, type PaletteCommand } from './components/CommandPalette'
 import { AddCompaniesDialog } from './components/AddCompaniesDialog'
 import { Editor } from './components/Editor'
@@ -128,8 +128,6 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
   const [regeneratingId, setRegeneratingId] = useState<string | null>(null)
   // Mailbox & API key settings (secrets stay in the main process).
   const [settings, setSettings] = useState<PublicSettings | null>(null)
-  // Name of the chosen AI backend, used in copy throughout the app.
-  const agent = agentName(settings?.aiProvider)
   const openSettings = (page: SettingsPage = settingsPage) => {
     setSettingsPage(page)
     setView('settings')
@@ -241,24 +239,26 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     update(pid, (q) => ({ ...q, status: 'researching', progress: [], error: undefined }))
     const jobId = crypto.randomUUID()
     jobs.current.set(jobId, (e) => e.kind === 'step' && update(pid, (q) => ({ ...q, progress: [...q.progress, e.text] })))
+    const researchOnly = !!campaignsRef.current.find((c) => c.id === p.campaignId)?.researchOnly
     const res = window.api
-      ? await window.api.claude.research({ jobId, website: p.domain || undefined, ...claudeContext(p) })
+      ? await window.api.claude.research({ jobId, website: p.domain || undefined, ...claudeContext(p), draft: !researchOnly })
       : ({ ok: false, error: 'Research runs in the Inroad desktop app.' } as const)
     jobs.current.delete(jobId)
     researching.current.delete(pid)
     if (!res.ok) return update(pid, (q) => ({ ...q, status: 'failed', error: res.error }))
-    const { research, draft } = res.value
+    const { research, brief, draft } = res.value
+    if (!draft) return update(pid, (q) => ({ ...q, status: 'researched', research, brief }))
     const md = normalizeMarkdown(draft.body)
     update(pid, (q) => ({
       ...q,
       status: 'drafted',
       research,
-      brief: draft.brief,
+      brief,
       subject: draft.subject,
       body: md,
       originalBody: md,
       to: draft.to ? [draft.to] : [],
-      versions: [...q.versions, { id: crypto.randomUUID(), label: `${agent}’s draft`, by: 'claude', at: Date.now(), markdown: md }],
+      versions: [...q.versions, { id: crypto.randomUUID(), label: 'AI draft', by: 'claude', at: Date.now(), markdown: md }],
       comments: [...(q.comments ?? []), ...stamp(draft.comments, 'draft')],
     }))
   }
@@ -737,7 +737,44 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     ;(document.activeElement as HTMLElement | null)?.blur()
   }
 
+  // Research-only campaigns: write the email for one organisation from its research.
+  const writeDraft = async () => {
+    if (selected?.status !== 'researched' || regeneratingId || !window.api) return
+    const p = selected
+    const pid = p.id
+    setRegeneratingId(pid)
+    const res = await window.api.claude.draft({ ...claudeContext(p), research: p.research ?? JSON.stringify(p.brief ?? {}) })
+    setRegeneratingId(null)
+    if (!res.ok) return notify({ text: `Couldn’t write the draft: ${res.error}` })
+    const md = normalizeMarkdown(res.value.body)
+    const before = get(pid)
+    if (!before) return
+    const version: Version = { id: crypto.randomUUID(), label: 'AI draft', by: 'claude', at: Date.now(), markdown: md }
+    const fresh = stamp(res.value.comments, 'draft')
+    const apply = () =>
+      update(pid, (q) => ({
+        ...q,
+        status: 'drafted',
+        brief: res.value.brief,
+        subject: res.value.subject,
+        body: md,
+        originalBody: md,
+        to: q.to.length ? q.to : res.value.to ? [res.value.to] : [],
+        versions: [...q.versions.filter((v) => v.id !== version.id), version],
+        comments: [...(q.comments ?? []).filter((c) => !fresh.some((f) => f.id === c.id)), ...fresh],
+      }))
+    apply()
+    record(
+      'Wrote draft',
+      pid,
+      () => update(pid, (q) => ({ ...q, ...before, chats: q.chats })),
+      apply,
+      `Wrote a draft for ${p.company}`,
+    )
+  }
+
   const regenerate = async () => {
+    if (selected?.status === 'researched') return writeDraft()
     if (!selected?.originalBody || regeneratingId || !window.api) return
     const p = selected
     const pid = p.id
@@ -829,7 +866,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     const pid = selected.id
     const prop = findProposal(selected, msgId, propId)
     if (!prop) return
-    if (accept && !hasText(selected, prop.old)) return notify({ text: `Couldn't apply: that text has changed since ${agent} suggested it` })
+    if (accept && !hasText(selected, prop.old)) return notify({ text: 'Couldn’t apply: that text has changed since the AI suggested it' })
     const apply = () => {
       if (accept) swapText(pid, prop.old, prop.new)
       setProposalState(pid, msgId, propId, accept ? 'accepted' : 'rejected')
@@ -1180,9 +1217,9 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     ...(undoTop ? [{ id: 'undo', group: 'Actions' as const, label: `Undo: ${undoTop.label}`, icon: <Undo2 />, shortcut: '⌘Z', run: appUndo }] : []),
     ...(redoTop ? [{ id: 'redo', group: 'Actions' as const, label: `Redo: ${redoTop.label}`, icon: <Redo2 />, shortcut: '⌘⇧Z', run: appRedo }] : []),
     { id: 'save', group: 'Actions', label: 'Save to drafts', icon: <Inbox />, shortcut: '⌘↵', run: save },
-    { id: 'diff', group: 'Actions', label: `Compare with ${agent}’s draft`, icon: <GitCompare />, shortcut: '⌘D', run: () => setShowDiff((v) => !v) },
+    { id: 'diff', group: 'Actions', label: 'Compare with the AI draft', icon: <GitCompare />, shortcut: '⌘D', run: () => setShowDiff((v) => !v) },
     { id: 'regen', group: 'Actions', label: 'Regenerate draft', icon: <RefreshCw />, shortcut: '⌘R', run: regenerate },
-    { id: 'chat', group: 'Actions', label: `Chat with ${agent}`, icon: <MessageSquare />, shortcut: '⌘/', run: openChat },
+    { id: 'chat', group: 'Actions', label: 'Chat with the AI', icon: <MessageSquare />, shortcut: '⌘/', run: openChat },
     { id: 'brief', group: 'Actions', label: 'Show brief', icon: <FileText />, shortcut: '⌘⇧B', run: () => togglePanel('brief') },
     { id: 'left', group: 'Actions', label: 'Toggle sidebar', icon: <PanelLeft />, shortcut: '⌘\\', run: () => setLeftOpen((v) => !v) },
     {
@@ -1459,8 +1496,8 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
       <h2 className="font-heading text-2xl font-semibold">Nothing in {campaign.name || 'this campaign'} yet</h2>
       <p className="max-w-md text-muted-foreground">
         {campaign.notes.trim()
-          ? `Add the organisations you want to reach. ${agent} researches each one and drafts an email.`
-          : `Start with the campaign notes: what you’re asking for, the details ${agent} should mention, and what to look for when researching. Then add the organisations you want to reach.`}
+          ? 'Add the organisations you want to reach. The AI researches each one and drafts an email.'
+          : `Start with the campaign notes: what you’re asking for, the details the AI should mention, and what to look for when researching. Then add the organisations you want to reach.`}
       </p>
       <div className="flex gap-2">
         {!campaign.notes.trim() && (
@@ -1608,7 +1645,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
             <SheetContent side="right" showCloseButton={false} className="w-full gap-0 p-0 sm:max-w-md">
               <SheetHeader className="sr-only">
                 <SheetTitle>Brief & chat</SheetTitle>
-                <SheetDescription>Research brief and chat with {agent} for this email</SheetDescription>
+                <SheetDescription>Research brief and chat with the AI for this email</SheetDescription>
               </SheetHeader>
               {panel}
             </SheetContent>

@@ -78,6 +78,7 @@ interface Props {
 const statusDot: Record<Status, string> = {
   queued: 'bg-muted-foreground/40',
   researching: 'bg-muted-foreground/60 animate-pulse',
+  researched: 'bg-muted-foreground',
   drafted: 'bg-primary',
   edited: 'bg-primary',
   saved: 'bg-success',

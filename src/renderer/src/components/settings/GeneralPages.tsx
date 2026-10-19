@@ -17,7 +17,6 @@ import { useMemo, useState, type ReactNode } from 'react'
 import type { MailSettings, PublicSettings } from '../../../../shared/api'
 import { emailHtml, emailStyleVars, type EmailStyle } from '../../markdown'
 import { globalShortcuts, NAV_SHORTCUTS } from '../CommandPalette'
-import { agentName, useAgentName } from '../../agent'
 import { Keys } from '../hint'
 import { SettingsBlock, SettingsRow, SettingsSection } from './layout'
 
@@ -120,7 +119,7 @@ export function MailboxForm({ settings, onSaved }: { settings: PublicSettings | 
     <div className="space-y-6">
       {settings && !settings.secureStorage && <InsecureStorageNotice />}
       <SettingsSection title="You">
-        <SettingsRow title="Name" description={`Shown as the sender, and how ${agentName(settings?.aiProvider)} signs off.`} htmlFor="fromName">
+        <SettingsRow title="Name" description="Shown as the sender, and how the AI signs off emails." htmlFor="fromName">
           <Input
             id="fromName"
             className="w-64"
@@ -498,11 +497,10 @@ export function AppearancePage({ theme, onTheme }: { theme: 'dark' | 'light'; on
 // ---------------------------------------------------------------- Shortcuts
 
 export function ShortcutsPage() {
-  const agent = useAgentName()
   return (
     <>
       <Intro>Most of the time you’re typing, so everything important also has a ⌘ shortcut. Press ? anywhere to see these.</Intro>
-      <ShortcutSection title="Anywhere, even while typing" items={globalShortcuts(agent)} />
+      <ShortcutSection title="Anywhere, even while typing" items={globalShortcuts()} />
       <ShortcutSection title="When you’re not in a text box" items={NAV_SHORTCUTS} />
     </>
   )

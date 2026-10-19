@@ -8,7 +8,7 @@ import type { ParsedOrganisation } from '../../../shared/api'
 import type { Campaign } from '../data'
 import { ButtonKeys } from './hint'
 
-// A plain list of names, one per line, doesn't need Claude to read it.
+// A plain list of names, one per line, doesn't need the AI to read it.
 const isPlainList = (lines: string[]) => lines.every((l) => l.length <= 60 && !/[,;:—–]|\s-\s|\.\s/.test(l) && l.split(/\s+/).length <= 5)
 
 const asList = (lines: string[]): ParsedOrganisation[] =>
@@ -115,7 +115,7 @@ export function AddCompaniesDialog({
               if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') submit()
             }}
           >
-            {orgs.length === 0 && <p className="p-3 text-sm text-muted-foreground">Claude didn’t find any organisations in that. Go back and try again.</p>}
+            {orgs.length === 0 && <p className="p-3 text-sm text-muted-foreground">No organisations found in that. Go back and try again.</p>}
             {orgs.map((o, i) => (
               <div key={i} className="grid gap-1.5 p-2.5">
                 <div className="flex items-center gap-2">

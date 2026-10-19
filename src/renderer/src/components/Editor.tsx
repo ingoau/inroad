@@ -17,6 +17,7 @@ import {
   Clock,
   PenLine,
   ExternalLink,
+  FileSearch,
   FileText,
   GitCompare,
   History,
@@ -33,7 +34,6 @@ import {
 } from 'lucide-react'
 import { useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 import type { Attachment, Prospect, Version } from '../data'
-import { useAgentName } from '../agent'
 import { changeCount } from '../diff'
 import { plainText } from '../markdown'
 import { DiffText } from './DiffText'
@@ -71,7 +71,6 @@ interface Props {
 
 export function Editor(props: Props) {
   const { prospect: p, queuePosition, attachments, showDiff, onToggleDiff, regenerating, onChange, onSave, onRetry } = props
-  const agent = useAgentName()
   const [newTo, setNewTo] = useState('')
   const [website, setWebsite] = useState('')
   const hasDraft = !!p.originalBody
@@ -136,7 +135,7 @@ export function Editor(props: Props) {
                 <FileText /> <span className="@max-md:hidden">Brief</span>
               </Button>
             </Hint>
-            <Hint label={`Chat with ${agent}`} keys="⌘ /">
+            <Hint label="Chat with the AI" keys="⌘ /">
               <Button variant={props.panelTab === 'chat' ? 'secondary' : 'ghost'} size="sm" onClick={() => props.onPanel('chat')}>
                 <MessageSquare /> <span className="@max-md:hidden">Chat</span>
                 {props.pendingSuggestions > 0 && <Badge className="h-4 min-w-4 bg-mark px-1 text-[10px] text-black">{props.pendingSuggestions}</Badge>}
@@ -154,6 +153,20 @@ export function Editor(props: Props) {
             </Notice>
           )}
           {p.status === 'researching' && <Researching prospect={p} />}
+          {p.status === 'researched' && (
+            <Notice icon={<FileSearch />} title="Researched">
+              <p className="mb-3">This campaign is research-only, so there’s no email yet. The brief has what was found.</p>
+              <div className="flex gap-2">
+                <Button onClick={() => props.onPanel('brief')} variant="outline">
+                  <FileText /> Show brief
+                </Button>
+                <Button onClick={props.onRegenerate} disabled={regenerating}>
+                  {regenerating ? <Loader2 className="animate-spin" /> : <PenLine />} {regenerating ? 'Writing…' : 'Write draft'}
+                  {!regenerating && <ButtonKeys keys="⌘ R" primary />}
+                </Button>
+              </div>
+            </Notice>
+          )}
           {p.status === 'failed' && (
             <Notice icon={<Search />} title="Research didn’t finish">
               <p className="mb-3">{p.error}</p>
@@ -289,8 +302,8 @@ export function Editor(props: Props) {
                 ))}
                 <span className="text-xs text-muted-foreground">
                   {changes > 0
-                    ? `${changes} change${changes === 1 ? '' : 's'} from ${agent}’s draft. Saving teaches your voice profile from them.`
-                    : `${agent}’s draft, unedited.`}
+                    ? `${changes} change${changes === 1 ? '' : 's'} from the AI draft. Saving teaches your voice profile from them.`
+                    : 'The AI draft, unedited.'}
                 </span>
               </div>
             </>
@@ -313,7 +326,7 @@ export function Editor(props: Props) {
                 <span className="@max-md:hidden">{regenerating ? 'Regenerating…' : 'Regenerate'}</span>
               </Button>
             </Hint>
-            <Hint label={`Compare with ${agent}’s draft`} keys="⌘ D" side="top">
+            <Hint label="Compare with the AI draft" keys="⌘ D" side="top">
               <Button variant={showDiff ? 'secondary' : 'ghost'} size="sm" onClick={onToggleDiff} disabled={changes === 0}>
                 <GitCompare /> <span className="@max-md:hidden">Changes</span>
                 {changes > 0 && <span className="text-muted-foreground">{changes}</span>}
@@ -385,7 +398,6 @@ function HistoryMenu({
   onRestore: (v: Version) => void
   onDelete: (v: Version) => void
 }) {
-  const agent = useAgentName()
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -404,7 +416,7 @@ function HistoryMenu({
               <span className="flex min-w-0 flex-1 flex-col">
                 <span className="truncate">{v.label}</span>
                 <span className="text-xs text-muted-foreground">
-                  {v.by === 'claude' ? agent : 'You'} · {ago(v.at)}
+                  {v.by === 'claude' ? 'AI' : 'You'} · {ago(v.at)}
                 </span>
               </span>
               {isCurrent ? (

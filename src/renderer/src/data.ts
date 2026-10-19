@@ -2,7 +2,8 @@ import type { Attachment, Brief, DraftRef, EmailComment, Recipient } from '../..
 
 export type { Attachment, Brief, Recipient }
 
-export type Status = 'queued' | 'researching' | 'drafted' | 'edited' | 'saved' | 'failed'
+// researched: the campaign is research-only, so there's a brief but no email yet.
+export type Status = 'queued' | 'researching' | 'researched' | 'drafted' | 'edited' | 'saved' | 'failed'
 
 export interface Proposal {
   id: string
@@ -16,11 +17,17 @@ export interface ChatMsg {
   id: string
   role: 'user' | 'assistant'
   text: string
+  // The passage of the email the user highlighted to ask about.
+  quote?: string
   proposals?: Proposal[]
   // Comments this reply pinned to the email (also stored on the prospect).
   comments?: EmailComment[]
   // Claude is still writing this reply.
   pending?: boolean
+  // While pending: what it's doing right now, e.g. "Checked Slack".
+  step?: string
+  // The user stopped this reply part-way.
+  stopped?: boolean
   // The reply failed; text holds the reason.
   error?: boolean
 }
@@ -110,7 +117,32 @@ export interface Campaign {
   attachments: Attachment[]
   // Which voice profile drafts in this campaign are written in.
   voiceId: string
+  // Research and write the brief only; emails are drafted one at a time on request.
+  researchOnly?: boolean
   deletedAt?: number
+}
+
+// Reusable text for the email editor, inserted by typing "/". Available
+// everywhere, in one folder's campaigns, or in one campaign.
+export interface Snippet {
+  id: string
+  name: string
+  // Markdown, like email bodies.
+  text: string
+  scope: { kind: 'global' } | { kind: 'folder'; id: string } | { kind: 'campaign'; id: string }
+  deletedAt?: number
+}
+
+// The snippets an email in this campaign can use, most specific first.
+export function snippetsFor(snippets: Snippet[], campaign: Pick<Campaign, 'id' | 'folderId'>): Snippet[] {
+  const rank = (s: Snippet) => (s.scope.kind === 'campaign' ? 0 : s.scope.kind === 'folder' ? 1 : 2)
+  return snippets
+    .filter(
+      (s) =>
+        !s.deletedAt &&
+        (s.scope.kind === 'global' || (s.scope.kind === 'folder' && s.scope.id === campaign.folderId) || (s.scope.kind === 'campaign' && s.scope.id === campaign.id)),
+    )
+    .sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name))
 }
 
 export interface Voice {
