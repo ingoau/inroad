@@ -1,10 +1,10 @@
 import { Button } from '@/components/ui/button'
-import { SidebarTrigger } from '@/components/ui/sidebar'
 import { Loader2, X } from 'lucide-react'
 import { useState } from 'react'
 import type { ParsedOrganisation } from '../../../shared/api'
 import type { Campaign } from '../data'
-import { Hint, Shortcut } from './hint'
+import { Shortcut } from './hint'
+import { TopBar } from './TopBar'
 
 // A plain list of names, one per line, doesn't need the AI to read it.
 const isPlainList = (lines: string[]) => lines.every((l) => l.length <= 60 && !/[,;:—–]|\s-\s|\.\s/.test(l) && l.split(/\s+/).length <= 5)
@@ -69,14 +69,11 @@ export function AddCompaniesPage({
 
   return (
     <div className="@container flex h-full min-w-0 flex-col bg-background">
-      <header className="drag flex h-12 shrink-0 items-center gap-5 px-4 text-sm">
-        <Hint label="Toggle sidebar" keys="⌘ \">
-          <SidebarTrigger className="text-muted-foreground" />
-        </Hint>
+      <TopBar>
         <button onClick={onCancel} className="text-muted-foreground hover:text-foreground">
           ← Back <Shortcut keys="esc" />
         </button>
-      </header>
+      </TopBar>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div

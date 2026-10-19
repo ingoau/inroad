@@ -222,7 +222,8 @@
 .email-body .suggestion-actions button:hover { opacity: 1; }
 .email-body .suggestion-actions .suggestion-accept:hover { color: var(--success); }
 .email-body .suggestion-actions .suggestion-reject:hover { color: var(--destructive); }
-.email-body .suggestion-next.suggestion-del, .email-body .suggestion-next.suggestion-add { outline: 1px solid color-mix(in oklch, var(--mark) 60%, transparent); outline-offset: 1px; }
+/* The change ⌘⇧↵ / ⌘⇧⌫ act on: its new text is underlined. */
+.email-body .suggestion-next.suggestion-add { box-shadow: inset 0 -1.5px 0 var(--mark); }
 /* No line between the sidebar and the page. */
 [data-slot="sidebar-container"] { border: 0 !important; }
 

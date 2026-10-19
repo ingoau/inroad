@@ -1,7 +1,6 @@
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
-import { SidebarTrigger, useSidebar } from '@/components/ui/sidebar'
 import { cn } from '@/lib/utils'
 import { Check, Loader2, Paperclip, Trash2, X } from 'lucide-react'
 import { useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
@@ -9,10 +8,11 @@ import { hasEmail, statusAfter, type Attachment, type Comment, type Proposal, ty
 import { changeCount } from '../diff'
 import { plainText } from '../markdown'
 import { DiffText } from './DiffText'
-import { Hint, Shortcut } from './hint'
+import { Shortcut } from './hint'
 import { RichEditor } from './RichEditor'
 import type { Tab } from './RightPanel'
 import type { SnippetItem } from './snippetMenu'
+import { TopBar } from './TopBar'
 
 interface Props {
   prospect: Prospect
@@ -100,17 +100,10 @@ export function Editor(props: Props) {
   const resolveNext = (accept: boolean) => props.proposals[0] && props.onProposal(props.proposals[0].msgId, props.proposals[0].id, accept)
 
   const setBody = (body: string) => onChange({ body, status: statusAfter(p, body) })
-  // Only needed to bring the sidebar back once it's hidden.
-  const { open: sidebarOpen, isMobile } = useSidebar()
 
   return (
     <div className="@container flex h-full min-w-0 flex-col bg-background">
-      <header className="drag flex h-12 shrink-0 items-center gap-5 px-4 text-sm">
-        {(!sidebarOpen || isMobile) && (
-          <Hint label="Show sidebar" keys="⌘ \">
-            <SidebarTrigger className="text-muted-foreground" />
-          </Hint>
-        )}
+      <TopBar>
         <div className="flex-1" />
         {/* With the side column open, its own Brief / Chat tabs take over. */}
         {!props.panelTab && (
@@ -135,7 +128,7 @@ export function Editor(props: Props) {
             onDelete={props.onDeleteVersion}
           />
         )}
-      </header>
+      </TopBar>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="relative mx-auto max-w-[600px] px-6 pt-12 pb-20">

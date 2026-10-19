@@ -1,7 +1,7 @@
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator, CommandShortcut } from '@/components/ui/command'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuShortcut, ContextMenuTrigger } from '@/components/ui/context-menu'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { Sidebar, SidebarContent, SidebarFooter, SidebarHeader, SidebarRail, useSidebar } from '@/components/ui/sidebar'
+import { Sidebar, SidebarContent, SidebarFooter, SidebarHeader, useSidebar } from '@/components/ui/sidebar'
 import { cn } from '@/lib/utils'
 import { Trash2 } from 'lucide-react'
 import { useEffect } from 'react'
@@ -25,8 +25,8 @@ export const FILTERS: [Filter, string][] = [
   ['saved', 'Saved'],
 ]
 
-// A dot per organisation: the only status shown in the list.
-const dot = (p: Prospect) =>
+// A dot per organisation: the only status shown in the list (and in ⌘K).
+export const dot = (p: Prospect) =>
   p.status === 'saved'
     ? 'bg-success'
     : p.status === 'failed'
@@ -86,7 +86,7 @@ export function AppSidebar(props: Props) {
       </SidebarHeader>
 
       <SidebarContent className="px-5">
-        <div role="tablist" aria-label="Filter" className="flex flex-wrap gap-x-3 gap-y-1 pt-2 pb-3 text-[13px]">
+        <div role="tablist" aria-label="Filter" className="flex gap-x-3 pt-2 pb-3 text-[13px] whitespace-nowrap">
           {FILTERS.map(([f, label]) => (
             <button
               key={f}
@@ -150,7 +150,6 @@ export function AppSidebar(props: Props) {
           Settings <Shortcut keys="⌘," />
         </button>
       </SidebarFooter>
-      <SidebarRail />
     </Sidebar>
   )
 }
@@ -199,7 +198,7 @@ function CampaignSwitcher(props: SwitcherProps) {
   return (
     <Popover open={props.open} onOpenChange={props.onOpenChange}>
       <PopoverTrigger asChild>
-        <button className="flex min-w-0 flex-col items-start gap-0.5 text-left">
+        <button className="-mx-1.5 -my-1 flex min-w-0 flex-col items-start gap-0.5 rounded-md px-1.5 py-1 text-left outline-none focus-visible:bg-muted/60">
           <span className="flex max-w-full items-center gap-1.5 font-heading font-semibold">
             <span className="truncate">{campaign.name || 'Untitled campaign'}</span>
             <span className="text-xs font-normal text-muted-foreground">⌄</span>
@@ -210,7 +209,7 @@ function CampaignSwitcher(props: SwitcherProps) {
           </span>
         </button>
       </PopoverTrigger>
-      <PopoverContent align="start" sideOffset={8} className="w-80 p-0">
+      <PopoverContent align="start" sideOffset={8} className="w-80 p-0" onCloseAutoFocus={(e) => e.preventDefault()}>
         <Command>
           <CommandInput placeholder="Go to a campaign…" />
           <CommandList className="max-h-[60vh]">

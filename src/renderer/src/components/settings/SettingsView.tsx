@@ -1,11 +1,10 @@
 import { Button } from '@/components/ui/button'
-import { SidebarTrigger } from '@/components/ui/sidebar'
 import { ChevronRight, Trash2 } from 'lucide-react'
 import type { ReactNode } from 'react'
 import type { PublicSettings } from '../../../../shared/api'
 import type { Campaign, Folder, Snippet, Voice } from '../../data'
 import type { EmailStyle } from '../../markdown'
-import { Hint } from '../hint'
+import { TopBar } from '../TopBar'
 import { TrashView, type TrashItem } from '../TrashView'
 import { AppearancePage, ClaudePage, DataPage, EmailStylePage, Intro, MailboxPage, ShortcutsPage } from './GeneralPages'
 import { CampaignPage, FolderPage, VoicePage } from './ProfilePages'
@@ -128,11 +127,8 @@ export function SettingsView(props: SettingsViewProps) {
 
   return (
     <div className="flex h-full min-w-0 flex-col bg-background">
-      <header className="drag flex h-12 shrink-0 items-center gap-2 px-3">
-        <Hint label="Toggle sidebar" keys="⌘ \">
-          <SidebarTrigger />
-        </Hint>
-        <nav className="flex min-w-0 flex-1 items-center gap-1.5 text-sm" aria-label="Breadcrumb">
+      <TopBar>
+        <nav className="flex min-w-0 flex-1 items-center gap-1.5" aria-label="Breadcrumb">
           <span className="text-muted-foreground">Settings</span>
           {crumbs.map((c, i) => (
             <span key={i} className="flex min-w-0 items-center gap-1.5">
@@ -146,7 +142,7 @@ export function SettingsView(props: SettingsViewProps) {
             <Trash2 /> Delete
           </Button>
         )}
-      </header>
+      </TopBar>
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-[760px] space-y-6 px-8 py-8 @max-xl:px-4">{body}</div>
       </div>

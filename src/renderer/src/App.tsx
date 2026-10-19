@@ -34,12 +34,14 @@ import { toast } from 'sonner'
 import { AgentProvider } from './agent'
 import { CommandPalette, ShortcutsDialog, type PaletteCommand } from './components/CommandPalette'
 import { AddCompaniesPage } from './components/AddCompaniesPage'
+import { Shortcut } from './components/hint'
+import { TopBar } from './components/TopBar'
 import { Editor } from './components/Editor'
 import { activeChat, RightPanel, type Tab } from './components/RightPanel'
 import type { TrashItem } from './components/TrashView'
 import { SettingsSidebar, type SettingsPage } from './components/settings/SettingsSidebar'
 import { SettingsView } from './components/settings/SettingsView'
-import { AppSidebar, inFilter, type Filter } from './components/Sidebar'
+import { AppSidebar, dot, inFilter, type Filter } from './components/Sidebar'
 import { statusStyle } from './components/status'
 import { useBreakpoint } from './layout'
 import {
@@ -1328,7 +1330,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
       id: `go-${p.id}`,
       group: 'Organisations',
       label: p.company,
-      icon: <span className="grid size-4 place-items-center rounded-sm bg-muted text-[10px] font-semibold">{p.company[0]}</span>,
+      icon: <span className={`mx-[5px] size-1.5 shrink-0 rounded-full ${dot(p)}`} />,
       hint: statusStyle[p.status].label,
       run: () => select(p.id),
     })),
@@ -1652,22 +1654,31 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
       }
     />
   ) : (
-    <div className="flex h-full flex-col items-start justify-center gap-3 px-10">
-      <h2 className="font-heading text-2xl font-semibold">Nothing in {campaign.name || 'this campaign'} yet</h2>
-      <p className="max-w-md text-muted-foreground">
+    <div className="flex h-full min-w-0 flex-col">
+      <TopBar />
+      <div className="mx-auto w-full max-w-[600px] px-6 pt-12">
+      <h2 className="mb-2 font-heading text-2xl font-medium">Nothing in {campaign.name || 'this campaign'} yet</h2>
+      <p className="mb-8 text-muted-foreground">
         {campaign.notes.trim()
           ? `Add the organisations you want to reach. The AI researches each one${campaign.researchOnly ? '' : ' and drafts an email'}.`
           : `Start with the campaign notes: what you’re asking for, the details the AI should mention, and what to look for when researching. Then add the organisations you want to reach.`}
       </p>
-      <div className="flex gap-2">
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-3 text-sm">
         {!campaign.notes.trim() && (
-          <Button onClick={() => openSettings({ kind: 'campaign', id: campaign.id })}>
-            <Flag /> Write campaign notes
+          <Button className="h-9 rounded-full px-4" onClick={() => openSettings({ kind: 'campaign', id: campaign.id })}>
+            Write campaign notes
           </Button>
         )}
-        <Button variant={campaign.notes.trim() ? 'default' : 'outline'} onClick={() => openAdd()}>
-          <Plus /> Add to campaign
-        </Button>
+        {campaign.notes.trim() ? (
+          <Button className="h-9 rounded-full px-4" onClick={() => openAdd()}>
+            Add organisations <span className="opacity-60">⌘N</span>
+          </Button>
+        ) : (
+          <button className="text-muted-foreground hover:text-foreground" onClick={() => openAdd()}>
+            Add organisations <Shortcut keys="⌘N" />
+          </button>
+        )}
+      </div>
       </div>
     </div>
   )
@@ -1685,7 +1696,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
   return (
     <TooltipProvider delayDuration={300}>
       <AgentProvider provider={settings?.aiProvider}>
-      <SidebarProvider open={leftOpen} onOpenChange={setLeftOpen} className="h-svh min-h-0 overflow-hidden" style={{ '--sidebar-width': '17rem' } as CSSProperties}>
+      <SidebarProvider open={leftOpen} onOpenChange={setLeftOpen} className="h-svh min-h-0 overflow-hidden" style={{ '--sidebar-width': '18rem' } as CSSProperties}>
         {view === 'settings' ? (
           <>
             <SettingsSidebar

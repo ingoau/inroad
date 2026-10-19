@@ -1,4 +1,4 @@
-import { Sidebar, SidebarContent, SidebarHeader, SidebarInput, SidebarRail } from '@/components/ui/sidebar'
+import { Sidebar, SidebarContent, SidebarHeader, SidebarInput } from '@/components/ui/sidebar'
 import { cn } from '@/lib/utils'
 import { Bot, Database, Keyboard, Mail, Palette, Slash, Trash2, Type, type LucideIcon } from 'lucide-react'
 import { useState } from 'react'
@@ -118,7 +118,6 @@ export function SettingsSidebar({
           </nav>
         )}
       </SidebarContent>
-      <SidebarRail />
     </Sidebar>
   )
 }
