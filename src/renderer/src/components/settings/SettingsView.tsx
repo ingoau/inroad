@@ -4,13 +4,14 @@ import { SidebarTrigger } from '@/components/ui/sidebar'
 import { ChevronRight, Trash2 } from 'lucide-react'
 import type { ReactNode } from 'react'
 import type { PublicSettings } from '../../../../shared/api'
-import type { Campaign, Folder, Voice } from '../../data'
+import type { Campaign, Folder, Snippet, Voice } from '../../data'
 import type { EmailStyle } from '../../markdown'
 import { Hint } from '../hint'
 import { TrashView, type TrashItem } from '../TrashView'
 import { AppearancePage, ClaudePage, DataPage, EmailStylePage, Intro, MailboxPage, ShortcutsPage } from './GeneralPages'
 import { CampaignPage, FolderPage, VoicePage } from './ProfilePages'
 import { GENERAL_PAGES, type SettingsPage } from './SettingsSidebar'
+import { SnippetsPage } from './SnippetsPage'
 
 export interface SettingsViewProps {
   page: SettingsPage
@@ -41,6 +42,10 @@ export interface SettingsViewProps {
   onDeleteVoiceNote: (voiceId: string, note: string) => void
   onAddExample: (voiceId: string, email: string) => void
   onDeleteExample: (voiceId: string, exampleId: string) => void
+  snippets: Snippet[]
+  onAddSnippet: () => void
+  onUpdateSnippet: (id: string, patch: Partial<Snippet>) => void
+  onDeleteSnippet: (id: string) => void
 }
 
 export function SettingsView(props: SettingsViewProps) {
@@ -104,6 +109,16 @@ export function SettingsView(props: SettingsViewProps) {
     body = {
       mailbox: <MailboxPage settings={props.settings} onSaved={props.onSettings} />,
       email: <EmailStylePage style={props.emailStyle} onChange={props.onEmailStyle} />,
+      snippets: (
+        <SnippetsPage
+          snippets={props.snippets}
+          folders={folders}
+          campaigns={campaigns}
+          onAdd={props.onAddSnippet}
+          onUpdate={props.onUpdateSnippet}
+          onDelete={props.onDeleteSnippet}
+        />
+      ),
       claude: <ClaudePage settings={props.settings} onSaved={props.onSettings} />,
       appearance: <AppearancePage theme={props.theme} onTheme={props.onTheme} />,
       shortcuts: <ShortcutsPage />,

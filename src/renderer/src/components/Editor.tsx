@@ -27,18 +27,20 @@ import {
   Paperclip,
   RefreshCw,
   Search,
+  Square,
   Trash2,
   X,
   CircleAlert,
   MessageSquareText,
 } from 'lucide-react'
 import { useMemo, useState, type CSSProperties, type ReactNode } from 'react'
-import type { Attachment, Prospect, Version } from '../data'
+import type { Attachment, Proposal, Prospect, Version } from '../data'
 import { changeCount } from '../diff'
 import { plainText } from '../markdown'
 import { DiffText } from './DiffText'
 import { ButtonKeys, Hint } from './hint'
 import { RichEditor } from './RichEditor'
+import type { SnippetItem } from './snippetMenu'
 import type { Tab } from './RightPanel'
 import { StatusBadge } from './status'
 
@@ -60,6 +62,7 @@ interface Props {
   onChange: (patch: Partial<Prospect>) => void
   onSave: () => void
   onRetry: (website: string) => void
+  onStopResearch: () => void
   // Which right-panel tab is showing (null when the panel is closed).
   panelTab: Tab | null
   // False when the docked panel already shows its own Brief / Chat tabs.
@@ -67,6 +70,13 @@ interface Props {
   pendingSuggestions: number
   onPanel: (tab: Tab) => void
   onDismissComment: (id: string) => void
+  // The active chat's pending suggestions, shown in the email too.
+  proposals: (Proposal & { msgId: string })[]
+  onProposal: (msgId: string, proposalId: string, accept: boolean) => void
+  onAsk: (text: string) => void
+  snippets: SnippetItem[]
+  snippetScopes: { value: string; label: string }[]
+  onSaveSnippet: (name: string, markdown: string, scope: string) => void
 }
 
 export function Editor(props: Props) {
@@ -99,6 +109,21 @@ export function Editor(props: Props) {
   const showPhrase = (id: string) => {
     setActiveComment(id)
     document.querySelector(`[data-comment="${id}"]`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  }
+
+  // Suggestions for the subject show under it; the rest go inline in the body.
+  const subjectProposals = props.proposals.filter((x) => p.subject.includes(x.old) && !p.body.includes(x.old))
+  const inline = useMemo(
+    () =>
+      props.proposals
+        .filter((x) => !subjectProposals.includes(x))
+        .map((x, i) => ({ id: `${x.msgId}:${x.id}`, old: plainText(x.old), new: plainText(x.new), reason: x.reason, next: i === 0 })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [JSON.stringify(props.proposals), p.subject],
+  )
+  const resolveInline = (id: string, accept: boolean) => {
+    const [msgId, propId] = id.split(':')
+    props.onProposal(msgId, propId, accept)
   }
 
   const setBody = (body: string) =>
@@ -152,7 +177,7 @@ export function Editor(props: Props) {
               {queuePosition > 0 ? `${queuePosition} ahead. Research runs 3 at a time.` : 'Starting shortly.'}
             </Notice>
           )}
-          {p.status === 'researching' && <Researching prospect={p} />}
+          {p.status === 'researching' && <Researching prospect={p} onStop={props.onStopResearch} />}
           {p.status === 'researched' && (
             <Notice icon={<FileSearch />} title="Researched">
               <p className="mb-3">This campaign is research-only, so there’s no email yet. The brief has what was found.</p>
@@ -232,6 +257,19 @@ export function Editor(props: Props) {
                 <Field label="Subject">
                   <input value={p.subject} onChange={(e) => onChange({ subject: e.target.value })} className="flex-1 bg-transparent font-medium outline-none" />
                 </Field>
+                {subjectProposals.map((x) => (
+                  <div key={x.id} className="flex items-center gap-2 border-b py-1.5 pl-[68px] text-sm">
+                    <span className="min-w-0 flex-1 truncate" title={x.reason}>
+                      <DiffText a={p.subject} b={p.subject.replace(x.old, () => x.new)} />
+                    </span>
+                    <Button variant="ghost" size="xs" onClick={() => props.onProposal(x.msgId, x.id, false)}>
+                      <X /> Reject
+                    </Button>
+                    <Button size="xs" onClick={() => props.onProposal(x.msgId, x.id, true)}>
+                      <Check /> Accept
+                    </Button>
+                  </div>
+                ))}
               </div>
 
               {showDiff ? (
@@ -247,6 +285,12 @@ export function Editor(props: Props) {
                     highlights={highlights}
                     activeHighlight={activeComment}
                     onHighlightClick={showComment}
+                    suggestions={inline}
+                    onSuggestion={resolveInline}
+                    onAsk={props.onAsk}
+                    snippets={props.snippets}
+                    snippetScopes={props.snippetScopes}
+                    onSaveSnippet={props.onSaveSnippet}
                   />
                 </div>
               )}
@@ -365,7 +409,7 @@ function Notice({ icon, title, children }: { icon: ReactNode; title: string; chi
   )
 }
 
-function Researching({ prospect: p }: { prospect: Prospect }) {
+function Researching({ prospect: p, onStop }: { prospect: Prospect; onStop: () => void }) {
   return (
     <Notice icon={<Loader2 className="animate-spin" />} title="Researching">
       <ol className="space-y-1">
@@ -375,6 +419,9 @@ function Researching({ prospect: p }: { prospect: Prospect }) {
           </li>
         ))}
       </ol>
+      <Button variant="outline" size="sm" className="mt-3" onClick={onStop}>
+        <Square className="fill-current" /> Stop
+      </Button>
     </Notice>
   )
 }

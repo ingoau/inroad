@@ -30,6 +30,7 @@ import {
   PenLine,
   Plus,
   Search,
+  Slash,
   Trash2,
   Type,
   type LucideIcon,
@@ -39,11 +40,13 @@ import type { Campaign, Folder, Voice } from '../../data'
 import { Keys } from '../hint'
 
 export type SettingsPage =
-  { kind: 'mailbox' | 'email' | 'claude' | 'appearance' | 'shortcuts' | 'trash' | 'data' } | { kind: 'folder' | 'campaign' | 'voice'; id: string }
+  | { kind: 'mailbox' | 'email' | 'snippets' | 'claude' | 'appearance' | 'shortcuts' | 'trash' | 'data' }
+  | { kind: 'folder' | 'campaign' | 'voice'; id: string }
 
 export const GENERAL_PAGES: { kind: Exclude<SettingsPage['kind'], 'folder' | 'campaign' | 'voice'>; title: string; Icon: LucideIcon }[] = [
   { kind: 'mailbox', title: 'Mailbox', Icon: Mail },
   { kind: 'email', title: 'Email style', Icon: Type },
+  { kind: 'snippets', title: 'Snippets', Icon: Slash },
   { kind: 'claude', title: 'AI agent', Icon: Bot },
   { kind: 'appearance', title: 'Appearance', Icon: Palette },
   { kind: 'shortcuts', title: 'Keyboard shortcuts', Icon: Keyboard },

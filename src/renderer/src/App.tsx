@@ -22,6 +22,8 @@ import {
   Redo2,
   RefreshCw,
   Settings,
+  Slash,
+  Square,
   Sun,
   Trash2,
   Undo2,
@@ -42,6 +44,7 @@ import { statusStyle } from './components/status'
 import { useBreakpoint } from './layout'
 import {
   MAX_VOICE_EXAMPLES,
+  snippetsFor,
   type Attachment,
   type Campaign,
   type ChatMsg,
@@ -49,6 +52,7 @@ import {
   type Folder,
   type ChatThread,
   type Prospect,
+  type Snippet,
   type Version,
   type Voice,
   type VoiceExample,
@@ -103,6 +107,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
   const [folders, setFolders] = useState(saved.folders)
   const [campaigns, setCampaigns] = useState(saved.campaigns)
   const [voices, setVoices] = useState(saved.voices)
+  const [snippets, setSnippets] = useState<Snippet[]>(saved.snippets ?? [])
   // The email workspace, or Settings (which swaps in its own sidebar).
   const [view, setView] = useState<'email' | 'settings'>('email')
   const [settingsPage, setSettingsPage] = useState<SettingsPage>({ kind: 'mailbox' })
@@ -116,8 +121,8 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
 
   // Persist to disk (Electron only) whenever the saved state changes.
   useEffect(() => {
-    persist({ version: 1, prospects, folders, campaigns, voices, campaignId, selectedId, onboarded, emailStyle })
-  }, [prospects, folders, campaigns, voices, campaignId, selectedId, onboarded, emailStyle])
+    persist({ version: 1, prospects, folders, campaigns, voices, campaignId, selectedId, onboarded, emailStyle, snippets })
+  }, [prospects, folders, campaigns, voices, campaignId, selectedId, onboarded, emailStyle, snippets])
   const [tab, setTab] = useState<Tab>('chat')
   const [filter, setFilter] = useState<Filter>('all')
   const [showDiff, setShowDiff] = useState(false)
@@ -231,6 +236,14 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     }
   }
 
+  // Running requests the user can stop, by prospect: research, and chat replies.
+  const researchJobs = useRef(new Map<string, string>())
+  const chatJobs = useRef(new Map<string, string>())
+  const stopJob = (jobs: Map<string, string>, pid: string) => {
+    const jobId = jobs.get(pid)
+    if (jobId) void window.api?.claude.cancel(jobId)
+  }
+
   // Research runner: pulls from the queue so at most MAX_CONCURRENT run at once.
   const researching = useRef(new Set<string>())
   const research = async (p: Prospect) => {
@@ -238,14 +251,16 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     researching.current.add(pid)
     update(pid, (q) => ({ ...q, status: 'researching', progress: [], error: undefined }))
     const jobId = crypto.randomUUID()
+    researchJobs.current.set(pid, jobId)
     jobs.current.set(jobId, (e) => e.kind === 'step' && update(pid, (q) => ({ ...q, progress: [...q.progress, e.text] })))
     const researchOnly = !!campaignsRef.current.find((c) => c.id === p.campaignId)?.researchOnly
     const res = window.api
       ? await window.api.claude.research({ jobId, website: p.domain || undefined, ...claudeContext(p), draft: !researchOnly })
       : ({ ok: false, error: 'Research runs in the Inroad desktop app.' } as const)
     jobs.current.delete(jobId)
+    researchJobs.current.delete(pid)
     researching.current.delete(pid)
-    if (!res.ok) return update(pid, (q) => ({ ...q, status: 'failed', error: res.error }))
+    if (!res.ok) return update(pid, (q) => ({ ...q, status: 'failed', error: res.error === 'Stopped.' ? 'You stopped the research.' : res.error }))
     const { research, brief, draft } = res.value
     if (!draft) return update(pid, (q) => ({ ...q, status: 'researched', research, brief }))
     const md = normalizeMarkdown(draft.body)
@@ -580,6 +595,30 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     apply()
     record(`Removed ${file.name}`, undefined, () => setAttachments(campaignId, (as) => [...as.slice(0, i), file, ...as.slice(i)]), apply)
   }
+
+  // ---- Snippets: reusable text, inserted in the email by typing "/" ----
+  const setSnippetDeleted = (id: string, at?: number) => setSnippets((ss) => ss.map((s) => (s.id === id ? { ...s, deletedAt: at } : s)))
+  const updateSnippet = (id: string, patch: Partial<Snippet>) => setSnippets((ss) => ss.map((s) => (s.id === id ? { ...s, ...patch } : s)))
+
+  const addSnippet = (snippet: Omit<Snippet, 'id'>, toast?: string) => {
+    const s: Snippet = { id: crypto.randomUUID(), ...snippet }
+    const apply = () => setSnippets((ss) => [...ss.filter((x) => x.id !== s.id), s])
+    apply()
+    record(s.name ? `Saved the “${s.name}” snippet` : 'Created a snippet', undefined, () => setSnippets((ss) => ss.filter((x) => x.id !== s.id)), apply, toast)
+    return s.id
+  }
+
+  const deleteSnippet = (id: string) => {
+    const s = snippets.find((x) => x.id === id)
+    if (s) softDelete(`the “${s.name || 'Untitled'}” snippet`, (at) => setSnippetDeleted(id, at))
+  }
+
+  const scopeLabel = (scope: Snippet['scope']) =>
+    scope.kind === 'global'
+      ? 'Everywhere'
+      : scope.kind === 'folder'
+        ? folders.find((f) => f.id === scope.id)?.name || 'Untitled folder'
+        : campaigns.find((c) => c.id === scope.id)?.name || 'Untitled campaign'
 
   const deleteVersion = (v: Version) => {
     if (!selected) return
@@ -961,10 +1000,23 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     )
   }
 
+  // ⌘/: with text selected in the email, ask the AI about it; otherwise jump
+  // between the email and the chat box.
   const toggleChatFocus = () => {
+    const editor = currentEditor()
+    const sel = editor?.state.selection
+    if (editor?.isFocused && sel && !sel.empty) return askAbout(editor.state.doc.textBetween(sel.from, sel.to, '\n'))
     if (document.activeElement?.id === 'chat-input' && selected?.originalBody) editBody()
     else openChat()
   }
+
+  // ⌘N: a new chat from the chat panel, otherwise add organisations.
+  const newThing = (el: HTMLElement) => {
+    if (el.closest?.('#side-panel') && selected?.originalBody) newChat()
+    else setAdding(true)
+  }
+
+  const replying = !!selected && !!activeChat(selected)?.messages.some((m) => m.pending)
 
   const goToNextReview = () => {
     const next = nextReviewId(selectedId)
@@ -1017,6 +1069,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
           fn()
         }
         if (key === ',') return run(() => openSettings())
+        if (key === 'n' && !e.shiftKey) return run(() => newThing(el))
         if (key === 'enter') return run(e.shiftKey ? () => resolveNextProposal(true) : save)
         if (key === 'backspace' && e.shiftKey) return run(() => resolveNextProposal(false))
         if (key === '/') return run(toggleChatFocus)
@@ -1164,6 +1217,17 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
           purge: () => update(p.id, (q) => ({ ...q, chats: q.chats.filter((x) => x.id !== c.id) })),
         })),
     ),
+    ...snippets
+      .filter((s) => s.deletedAt)
+      .map<TrashEntry>((s) => ({
+        key: `snippet:${s.id}`,
+        kind: 'snippet',
+        label: s.name || 'Untitled snippet',
+        context: scopeLabel(s.scope),
+        deletedAt: s.deletedAt!,
+        set: (at) => setSnippetDeleted(s.id, at),
+        purge: () => setSnippets((ss) => ss.filter((x) => x.id !== s.id)),
+      })),
     ...prospects.flatMap((p) =>
       p.versions
         .filter((v) => v.deletedAt)
@@ -1230,7 +1294,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
       shortcut: '⌘⇧\\',
       run: () => setRightOpen((v) => !v),
     },
-    { id: 'add', group: 'Actions', label: 'Add to campaign', icon: <Plus />, shortcut: 'C', run: () => setAdding(true) },
+    { id: 'add', group: 'Actions', label: 'Add to campaign', icon: <Plus />, shortcut: '⌘N', run: () => setAdding(true) },
     {
       id: 'theme',
       group: 'Actions',
@@ -1241,6 +1305,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     { id: 'help', group: 'Actions', label: 'Keyboard shortcuts', icon: <Keyboard />, shortcut: '?', run: () => setHelp(true) },
     { id: 'settings', group: 'Actions', label: 'Settings', icon: <Settings />, shortcut: '⌘,', run: () => openSettings() },
     { id: 'new-chat', group: 'Actions', label: 'New chat', icon: <MessageSquarePlus />, run: newChat },
+    ...(replying && selected ? [{ id: 'stop', group: 'Actions' as const, label: 'Stop the reply', icon: <Square />, run: () => stopJob(chatJobs.current, selected.id) }] : []),
     ...(selected && activeChat(selected)
       ? [
           {
@@ -1281,6 +1346,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
         run: () => setVoice(v.id),
       })),
     { id: 'voices', group: 'Campaigns & voices', label: 'Edit voices', icon: <PenLine />, run: editVoices },
+    { id: 'snippets', group: 'Campaigns & voices', label: 'Edit snippets', icon: <Slash />, run: () => openSettings({ kind: 'snippets' }) },
     ...aliveCampaigns
       .filter((c) => c.id !== campaign.id)
       .map<PaletteCommand>((c) => ({
@@ -1349,9 +1415,21 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
   // A suggestion as Claude will see it in the transcript of earlier turns.
   const describe = (m: ChatMsg) =>
     [
+      m.quote ? `[About this part of the email: “${m.quote}”]` : '',
       m.text,
       ...(m.proposals ?? []).map((x) => `[Suggested replacing “${x.old}” with “${x.new}” — ${x.state === 'pending' ? 'not yet decided' : x.state}]`),
-    ].join('\n')
+      m.stopped ? '[The user stopped this reply here]' : '',
+    ]
+      .filter(Boolean)
+      .join('\n')
+
+  // A passage of the email attached to the next chat message (highlight + Ask AI, or ⌘/).
+  const [chatQuote, setChatQuote] = useState<{ pid: string; text: string } | null>(null)
+  const askAbout = (text: string) => {
+    if (!selected?.originalBody || !text.trim()) return
+    setChatQuote({ pid: selected.id, text: text.trim() })
+    openChat()
+  }
 
   const sendChat = async (text: string) => {
     if (!selected) return
@@ -1365,7 +1443,9 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     const title = thread.messages.length ? thread.title : text.slice(0, 40)
     const history = thread.messages.filter((m) => !m.error).map((m) => ({ role: m.role, text: describe(m) }))
     const replyId = crypto.randomUUID()
-    const userMsg: ChatMsg = { id: crypto.randomUUID(), role: 'user', text }
+    const quote = chatQuote?.pid === pid ? chatQuote.text : undefined
+    if (quote) setChatQuote(null)
+    const userMsg: ChatMsg = { id: crypto.randomUUID(), role: 'user', text, quote }
     const reply: ChatMsg = { id: replyId, role: 'assistant', text: '', pending: true }
     update(pid, (q) => ({
       ...q,
@@ -1382,7 +1462,8 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     if (!window.api) return setReply((m) => ({ ...m, pending: false, error: true, text: 'Chat runs in the Inroad desktop app.' }))
 
     const jobId = crypto.randomUUID()
-    jobs.current.set(jobId, (e) => e.kind === 'delta' && setReply((m) => ({ ...m, text: m.text + e.text })))
+    jobs.current.set(jobId, (e) => setReply((m) => (e.kind === 'delta' ? { ...m, text: m.text + e.text } : { ...m, step: e.text })))
+    chatJobs.current.set(pid, jobId)
     const res = await window.api.claude.chat({
       jobId,
       ...claudeContext(p),
@@ -1392,12 +1473,16 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
       comments: (p.comments ?? []).filter((c) => !c.dismissed).map(({ quote, comment, kind }) => ({ quote, comment, kind })),
       history,
       message: text,
+      quote,
     })
     jobs.current.delete(jobId)
-    if (!res.ok) return setReply((m) => ({ ...m, pending: false, error: true, text: res.error }))
+    chatJobs.current.delete(pid)
+    if (!res.ok) return setReply((m) => ({ ...m, pending: false, step: undefined, error: true, text: res.error }))
     setReply((m) => ({
       ...m,
       pending: false,
+      step: undefined,
+      stopped: res.value.stopped,
       text: res.value.text,
       proposals: res.value.proposals.map((x) => ({ ...x, id: crypto.randomUUID(), state: 'pending' })),
       comments: res.value.comments,
@@ -1446,6 +1531,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     setCampaignId(fresh.campaignId)
     setSelectedId(fresh.selectedId)
     setFolders(fresh.folders)
+    setSnippets([])
     setOnboarded(false)
     setView('email')
     notify({ text: 'Started fresh' })
@@ -1462,6 +1548,9 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
       onProposal={resolveProposal}
       onRevertProposal={revertProposal}
       onSend={sendChat}
+      onStop={() => stopJob(chatJobs.current, selected.id)}
+      quote={chatQuote?.pid === selected.id ? chatQuote.text : null}
+      onClearQuote={() => setChatQuote(null)}
       onNewChat={newChat}
       onSelectChat={selectChat}
       onDeleteChat={deleteChat}
@@ -1484,12 +1573,28 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
       onDeleteVersion={deleteVersion}
       onChange={(patch) => (patch.to ? setRecipients(patch.to) : update(selected.id, (p) => ({ ...p, ...patch })))}
       onRetry={(website) => update(selected.id, (p) => ({ ...p, status: 'queued', progress: [], error: undefined, domain: website || p.domain }))}
+      onStopResearch={() => stopJob(researchJobs.current, selected.id)}
       onSave={save}
       panelTab={rightOpen ? tab : null}
       showPanelButtons={!(rightDocks && rightOpen)}
       pendingSuggestions={(activeChat(selected)?.messages ?? []).flatMap((m) => m.proposals ?? []).filter((x) => x.state === 'pending').length}
       onPanel={togglePanel}
       onDismissComment={dismissComment}
+      proposals={(activeChat(selected)?.messages ?? []).flatMap((m) => (m.proposals ?? []).filter((x) => x.state === 'pending').map((x) => ({ ...x, msgId: m.id })))}
+      onProposal={resolveProposal}
+      onAsk={askAbout}
+      snippets={snippetsFor(snippets, campaign).map((s) => ({ id: s.id, name: s.name, text: s.text, scope: scopeLabel(s.scope) }))}
+      snippetScopes={[
+        { value: 'global', label: 'Everywhere' },
+        { value: 'folder', label: folder.name || 'This folder' },
+        { value: 'campaign', label: campaign.name || 'This campaign' },
+      ]}
+      onSaveSnippet={(name, text, scope) =>
+        addSnippet(
+          { name, text, scope: scope === 'folder' ? { kind: 'folder', id: folder.id } : scope === 'campaign' ? { kind: 'campaign', id: campaign.id } : { kind: 'global' } },
+          `Saved “${name}”. Type / in an email to use it.`,
+        )
+      }
     />
   ) : (
     <div className="flex h-full flex-col items-start justify-center gap-3 px-10">
@@ -1570,6 +1675,10 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
                 onDeleteVoiceNote={deleteVoiceNote}
                 onAddExample={addExample}
                 onDeleteExample={deleteExample}
+                snippets={snippets.filter((s) => !s.deletedAt)}
+                onAddSnippet={() => addSnippet({ name: '', text: '', scope: { kind: 'global' } })}
+                onUpdateSnippet={updateSnippet}
+                onDeleteSnippet={deleteSnippet}
               />
             </SidebarInset>
           </>

@@ -19,6 +19,8 @@ import {
   MessageSquarePlus,
   MessageSquareText,
   Sparkles,
+  Square,
+  TextQuote,
   Trash2,
   Undo2,
   UserPlus,
@@ -50,6 +52,11 @@ interface Props {
   onProposal: (msgId: string, proposalId: string, accept: boolean) => void
   onRevertProposal: (msgId: string, proposalId: string) => void
   onSend: (text: string) => void
+  // Stops the reply being written.
+  onStop: () => void
+  // A passage of the email to ask about, attached to the next message.
+  quote: string | null
+  onClearQuote: () => void
   onNewChat: () => void
   onSelectChat: (id: string) => void
   onDeleteChat: (id: string) => void
@@ -66,7 +73,7 @@ export function RightPanel(props: Props) {
   const pending = (activeChat(p)?.messages ?? []).flatMap((m) => m.proposals ?? []).filter((x) => x.state === 'pending').length
 
   return (
-    <div className="flex h-full min-w-0 flex-col bg-sidebar">
+    <div id="side-panel" className="flex h-full min-w-0 flex-col bg-sidebar">
       <div className="drag flex h-12 shrink-0 items-center gap-2 border-b px-3">
         <Tabs value={tab} onValueChange={(v) => onTab(v as Tab)}>
           <TabsList>
@@ -211,7 +218,7 @@ function RecipientCard({ r, added, onAdd }: { r: Recipient; added: boolean; onAd
   )
 }
 
-function ChatView({ prospect: p, onProposal, onRevertProposal: onRevert, onSend, onNewChat, onSelectChat, onDeleteChat }: Props) {
+function ChatView({ prospect: p, onProposal, onRevertProposal: onRevert, onSend, onStop, quote, onClearQuote, onNewChat, onSelectChat, onDeleteChat }: Props) {
   const [draft, setDraft] = useState('')
   const endRef = useRef<HTMLDivElement>(null)
   const thread = activeChat(p)
@@ -289,13 +296,14 @@ function ChatView({ prospect: p, onProposal, onRevertProposal: onRevert, onSend,
           {messages.map((m) =>
             m.role === 'user' ? (
               <div key={m.id} className="ml-auto w-fit max-w-[85%] rounded-lg bg-primary px-3 py-2 text-primary-foreground">
+                {m.quote && <div className="mb-1.5 line-clamp-3 border-l-2 border-primary-foreground/40 pl-2 text-xs opacity-80">{m.quote}</div>}
                 {m.text}
               </div>
             ) : (
               <div key={m.id} className="space-y-2">
                 {m.pending && !m.text ? (
                   <p className="flex items-center gap-2 text-muted-foreground">
-                    <Loader2 className="size-3.5 animate-spin" /> Thinking…
+                    <Loader2 className="size-3.5 shrink-0 animate-spin" /> <span className="truncate">{m.step ?? 'Thinking…'}</span>
                   </p>
                 ) : m.error ? (
                   <p className="flex items-start gap-2 text-destructive">
@@ -314,6 +322,12 @@ function ChatView({ prospect: p, onProposal, onRevertProposal: onRevert, onSend,
                     >
                       {m.text}
                     </Markdown>
+                    {m.pending && m.step && (
+                      <p className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+                        <Loader2 className="size-3 shrink-0 animate-spin" /> <span className="truncate">{m.step}</span>
+                      </p>
+                    )}
+                    {m.stopped && <p className="mt-1 text-xs text-muted-foreground">Stopped</p>}
                   </div>
                 )}
                 {m.comments && m.comments.length > 0 && (
@@ -380,6 +394,15 @@ function ChatView({ prospect: p, onProposal, onRevertProposal: onRevert, onSend,
       </ScrollArea>
 
       <div className="border-t p-3">
+        {quote && (
+          <div className="mb-2 flex items-start gap-2 rounded-md border bg-background px-2.5 py-1.5 text-xs">
+            <TextQuote className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+            <span className="line-clamp-3 min-w-0 flex-1 text-muted-foreground">{quote}</span>
+            <button onClick={onClearQuote} className="shrink-0 opacity-60 hover:opacity-100" title="Remove">
+              <X className="size-3.5" />
+            </button>
+          </div>
+        )}
         <div className="relative">
           <Textarea
             id="chat-input"
@@ -392,12 +415,20 @@ function ChatView({ prospect: p, onProposal, onRevertProposal: onRevert, onSend,
               }
             }}
             disabled={!ready}
-            placeholder={ready ? `Tell the AI what to change in the ${p.company} email…` : 'Waiting for the draft…'}
+            placeholder={
+              !ready ? 'Waiting for the draft…' : quote ? 'Ask about the highlighted part…' : `Tell the AI what to change in the ${p.company} email…`
+            }
             className="max-h-40 min-h-16 resize-none bg-background pr-10"
           />
-          <Button size="icon-xs" onClick={send} disabled={!draft.trim() || !ready || replying} className="absolute right-2 bottom-2" title="Send (↵)">
-            <ArrowUp />
-          </Button>
+          {replying ? (
+            <Button size="icon-xs" variant="secondary" onClick={onStop} className="absolute right-2 bottom-2" title="Stop">
+              <Square className="fill-current" />
+            </Button>
+          ) : (
+            <Button size="icon-xs" onClick={send} disabled={!draft.trim() || !ready} className="absolute right-2 bottom-2" title="Send (↵)">
+              <ArrowUp />
+            </Button>
+          )}
         </div>
         <p className="mt-1.5 text-xs text-muted-foreground">{replying ? 'The AI is replying…' : 'The AI sees the email, the brief and your voice.'}</p>
       </div>

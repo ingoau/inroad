@@ -204,3 +204,16 @@
 .email-body .comment-verify { background: color-mix(in oklch, var(--mark) 22%, transparent); box-shadow: inset 0 -2px 0 var(--mark); }
 .email-body .comment-note { background: color-mix(in oklch, var(--muted-foreground) 12%, transparent); box-shadow: inset 0 -1.5px 0 color-mix(in oklch, var(--muted-foreground) 55%, transparent); }
 .email-body .comment-active { background: color-mix(in oklch, var(--mark) 42%, transparent); }
+
+/* The AI's pending suggestions, shown in the email (suggestionHighlights.ts). */
+.email-body .suggestion-del { color: var(--muted-foreground); text-decoration: line-through; text-decoration-color: var(--foreground); }
+.email-body .suggestion-add { background: color-mix(in oklch, var(--mark) 50%, transparent); border-radius: 2px; text-decoration: none; }
+.dark .email-body .suggestion-add { background: color-mix(in oklch, var(--mark) 28%, transparent); }
+.email-body .suggestion-next.suggestion-add { box-shadow: inset 0 -2px 0 var(--mark); }
+.email-body .suggestion-actions { display: inline-flex; gap: 2px; margin-left: 4px; vertical-align: 0.1em; user-select: none; }
+.email-body .suggestion-actions button {
+  display: inline-grid; place-items: center; width: 1.25rem; height: 1.25rem; border-radius: 4px; border: 1px solid var(--border);
+  background: var(--background); color: var(--muted-foreground); font-size: 11px; line-height: 1; cursor: pointer;
+}
+.email-body .suggestion-actions .suggestion-accept:hover { color: var(--success); border-color: var(--success); }
+.email-body .suggestion-actions .suggestion-reject:hover { color: var(--destructive); border-color: var(--destructive); }

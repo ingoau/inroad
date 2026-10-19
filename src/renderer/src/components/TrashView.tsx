@@ -10,10 +10,10 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
-import { Building2, Flag, Folder, History, Mail, MessageSquare, PenLine, RotateCcw, StickyNote, Trash2, type LucideIcon } from 'lucide-react'
+import { Building2, Flag, Folder, History, Mail, MessageSquare, PenLine, RotateCcw, Slash, StickyNote, Trash2, type LucideIcon } from 'lucide-react'
 import type { ReactNode } from 'react'
 
-export type TrashKind = 'folder' | 'organisation' | 'campaign' | 'voice' | 'note' | 'example' | 'chat' | 'version'
+export type TrashKind = 'folder' | 'organisation' | 'campaign' | 'voice' | 'note' | 'example' | 'chat' | 'version' | 'snippet'
 
 export interface TrashItem {
   key: string
@@ -33,6 +33,7 @@ const kinds: Record<TrashKind, { title: string; Icon: LucideIcon }> = {
   example: { title: 'Example emails', Icon: Mail },
   chat: { title: 'Chats', Icon: MessageSquare },
   version: { title: 'Email versions', Icon: History },
+  snippet: { title: 'Snippets', Icon: Slash },
 }
 
 function ago(at: number) {
