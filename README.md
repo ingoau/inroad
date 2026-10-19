@@ -5,8 +5,9 @@
 Research and draft personalised outreach emails in bulk, in your own voice. Built for things like finding sponsors and venues for a hackathon.
 
 - **Folders and campaigns.** A folder holds shared context (usually an event); each campaign inside it (Sponsors, Venues…) says what you're asking for.
-- **Research in the background.** Add organisations and Claude researches each one, writes a brief with sources and possible recipients, and drafts the email.
-- **Edit with Claude.** A rich editor, plus a chat sidebar where Claude suggests edits you accept or reject.
+- **Research in the background.** Add organisations and the AI researches each one, writes a brief with sources and possible recipients, and drafts the email. Or make a campaign research-only and draft emails one at a time.
+- **Edit with AI.** A rich editor, plus a chat sidebar where the AI suggests edits you accept or reject, shown as tracked changes in the email. Highlight a passage to ask about it, and stop a reply any time.
+- **Snippets.** Save text you reuse everywhere, per folder or per campaign, and type `/` in an email to insert it.
 - **Saves to your Drafts folder** over IMAP (Gmail, Fastmail, iCloud, Outlook or any IMAP server). Inroad never sends anything.
 - **Learns your voice.** Paste emails you've written to start, and every edit you make before saving teaches it more.
 - Keyboard-first, with undo for everything, soft delete, version history and multiple chats per email.
@@ -47,7 +48,8 @@ Inroad walks you through this the first time you open it.
   - **Claude:** Inroad uses the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk/overview), so if you're logged in to Claude Code on your computer it uses those credentials. If you haven't signed in yet, install [Claude Code](https://claude.com/claude-code), run `claude` once in a terminal and log in. Or use an Anthropic API key instead (also in Settings → AI agent).
   - **opencode:** Inroad runs the [opencode](https://opencode.ai) CLI installed on your computer, using your own providers, models and agents. Set the opencode path, model and agent in Settings → AI agent. Leave the agent blank to use `inroad`, which can only search the web and read pages.
 - **Mailbox:** in Settings → Mailbox, enter your IMAP details and an app password (most providers require one). Passwords and keys are stored in your system keychain; if your computer has no keychain (some Linux setups), Inroad says so and stores them unencrypted in its settings file, readable only by your user account.
-- **Event lookup:** "Find details" searches the web. With Claude it can also search connectors on your Claude account (Slack, email, docs). It only uses tools that read; anything that sends or changes data is blocked.
+- **Models:** Settings → AI agent picks the main model (research, drafting, chat) and a smaller one for quick processing jobs.
+- **Connected apps:** "Find details" and the chat search the web. With Claude they can also search connectors on your Claude account (Slack, email, docs). They only use tools that read; anything that sends or changes data is blocked.
 
 Everything you write in Inroad is stored locally on your computer.
 

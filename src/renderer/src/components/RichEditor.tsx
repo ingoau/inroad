@@ -24,7 +24,7 @@ import {
   Unlink,
 } from 'lucide-react'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { emailExtensions, parseMarkdown, serializeMarkdown } from '../markdown'
+import { emailExtensions, parseMarkdown, plainText, serializeMarkdown } from '../markdown'
 import { currentEditor, historyDepth, undoBridge } from '../undo'
 import { CommentHighlights, commentsKey, type Highlight } from './commentHighlights'
 import { Hint, Keys } from './hint'
@@ -342,7 +342,8 @@ export function RichEditor({
         editor={editor}
         pluginKey="selectionMenu"
         shouldShow={({ editor: e, from, to }) =>
-          !!snippetDraftRef.current || (from !== to && e.isFocused && !e.isActive('link') && !linkDraftRef.current && !!(onAsk || onSaveSnippet))
+          !!snippetDraftRef.current ||
+          (from !== to && document.activeElement?.id === 'email-body' && !e.isActive('link') && !linkDraftRef.current && !!(onAsk || onSaveSnippet))
         }
         options={{ placement: 'top-start', offset: 8 }}
         className="z-30"
@@ -383,7 +384,7 @@ export function RichEditor({
                   <span className="truncate font-medium">{s.name}</span>
                   <span className="ml-auto shrink-0 text-xs text-muted-foreground">{s.scope}</span>
                 </span>
-                <span className="line-clamp-1 text-xs text-muted-foreground">{s.text}</span>
+                <span className="line-clamp-1 text-xs text-muted-foreground">{plainText(s.text)}</span>
               </button>
             ))
           ) : (
