@@ -110,7 +110,7 @@ export function TrashView({
             <h2 className="mb-2 px-1 text-sm text-muted-foreground">
               {title} <span className="text-muted-foreground/70">{items.length}</span>
             </h2>
-            <div className="divide-y rounded-xl border bg-card">
+            <div className="divide-y divide-border/60">
               {items.map((item) => (
                 <div key={item.key} className="flex items-center gap-3 px-4 py-2.5 text-sm">
                   <Icon className="size-4 shrink-0 text-muted-foreground" />

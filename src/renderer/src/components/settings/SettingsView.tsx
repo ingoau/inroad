@@ -1,5 +1,4 @@
 import { Button } from '@/components/ui/button'
-import { Separator } from '@/components/ui/separator'
 import { SidebarTrigger } from '@/components/ui/sidebar'
 import { ChevronRight, Trash2 } from 'lucide-react'
 import type { ReactNode } from 'react'
@@ -129,11 +128,10 @@ export function SettingsView(props: SettingsViewProps) {
 
   return (
     <div className="flex h-full min-w-0 flex-col bg-background">
-      <header className="drag flex h-12 shrink-0 items-center gap-2 border-b px-3">
+      <header className="drag flex h-12 shrink-0 items-center gap-2 px-3">
         <Hint label="Toggle sidebar" keys="⌘ \">
           <SidebarTrigger />
         </Hint>
-        <Separator orientation="vertical" className="mr-1 data-[orientation=vertical]:h-4" />
         <nav className="flex min-w-0 flex-1 items-center gap-1.5 text-sm" aria-label="Breadcrumb">
           <span className="text-muted-foreground">Settings</span>
           {crumbs.map((c, i) => (

@@ -35,3 +35,8 @@ export function ButtonKeys({ keys, primary, className }: { keys: string; primary
     </Kbd>
   )
 }
+
+// A shortcut written quietly after a label, e.g. "Settings ⌘,".
+export function Shortcut({ keys, className }: { keys: string; className?: string }) {
+  return <span className={cn('ml-1.5 text-xs font-normal tracking-wide text-muted-foreground/60', className)}>{keys}</span>
+}

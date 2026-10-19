@@ -1,14 +1,10 @@
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Separator } from '@/components/ui/separator'
 import { SidebarTrigger } from '@/components/ui/sidebar'
-import { Textarea } from '@/components/ui/textarea'
-import { ArrowLeft, ArrowRight, CircleAlert, Globe, Loader2, Sparkles, X } from 'lucide-react'
+import { Loader2, X } from 'lucide-react'
 import { useState } from 'react'
 import type { ParsedOrganisation } from '../../../shared/api'
 import type { Campaign } from '../data'
-import { ButtonKeys, Hint, Keys } from './hint'
+import { Hint, Shortcut } from './hint'
 
 // A plain list of names, one per line, doesn't need the AI to read it.
 const isPlainList = (lines: string[]) => lines.every((l) => l.length <= 60 && !/[,;:—–]|\s-\s|\.\s/.test(l) && l.split(/\s+/).length <= 5)
@@ -69,23 +65,22 @@ export function AddCompaniesPage({
     setOrgs(null)
   }
   const edit = (i: number, patch: Partial<ParsedOrganisation>) => setOrgs((os) => os && os.map((o, j) => (j === i ? { ...o, ...patch } : o)))
+  const field = 'bg-transparent outline-none placeholder:text-muted-foreground/50'
 
   return (
     <div className="@container flex h-full min-w-0 flex-col bg-background">
-      <header className="drag flex h-12 shrink-0 items-center gap-2 border-b px-3">
+      <header className="drag flex h-12 shrink-0 items-center gap-5 px-4 text-sm">
         <Hint label="Toggle sidebar" keys="⌘ \">
-          <SidebarTrigger />
+          <SidebarTrigger className="text-muted-foreground" />
         </Hint>
-        <Separator orientation="vertical" className="mr-1 data-[orientation=vertical]:h-4" />
-        <h1 className="min-w-0 flex-1 truncate font-heading text-base font-semibold">Add to {campaign.name || 'this campaign'}</h1>
-        <Button variant="ghost" size="sm" onClick={onCancel}>
-          Cancel <Keys keys="esc" className="@max-md:hidden" />
-        </Button>
+        <button onClick={onCancel} className="text-muted-foreground hover:text-foreground">
+          ← Back <Shortcut keys="esc" />
+        </button>
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div
-          className="mx-auto max-w-[720px] space-y-4 px-8 py-8 @max-xl:px-4"
+          className="mx-auto flex max-w-[600px] flex-col gap-7 px-6 pt-12 pb-20"
           onKeyDown={(e) => {
             if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
               e.preventDefault()
@@ -94,104 +89,89 @@ export function AddCompaniesPage({
             }
           }}
         >
-          <p className="text-muted-foreground">
-            {orgs
-              ? 'Check the list. Notes are followed for that organisation only, on top of the campaign’s notes and email format.'
-              : 'Write it however you like: a list of names, or notes about what to say to each one.'}
-          </p>
+          <div>
+            <h1 className="mb-2 font-heading text-2xl font-medium">Add to {campaign.name || 'this campaign'}</h1>
+            <p className="text-muted-foreground">
+              {orgs
+                ? 'Check the list. Notes are followed for that organisation only, on top of the campaign’s notes and email format.'
+                : 'Write it however you like: a list of names, or notes about what to say to each one.'}
+            </p>
+          </div>
 
           {!orgs ? (
             <>
-              <Textarea
+              <textarea
                 autoFocus
+                aria-label="Organisations to add"
                 value={text}
                 onChange={(e) => onText(e.target.value)}
-                rows={12}
-                className="min-h-64 leading-relaxed"
-                placeholder={
-                  'Canva and Atlassian, both formal.\nPCBWay: they sponsored Campfire, so mention that and ask for about 40 badges.\nAlso JLCPCB (jlcpcb.com).'
-                }
+                rows={6}
+                className={`field-sizing-content min-h-40 w-full resize-none text-base leading-relaxed ${field}`}
+                placeholder={'Canva and Atlassian, both formal.\nPCBWay: they sponsored Campfire, so mention that and ask for about 40 badges.\nAlso JLCPCB (jlcpcb.com).'}
               />
               {error && (
-                <p className="flex items-start gap-2 text-sm text-destructive">
-                  <CircleAlert className="mt-0.5 size-4 shrink-0" />
-                  <span>
-                    {error}{' '}
-                    <button className="underline" onClick={() => setOrgs(asList(lines))}>
-                      Use one per line instead
-                    </button>
-                  </span>
+                <p className="text-sm text-destructive">
+                  {error}{' '}
+                  <button className="underline" onClick={() => setOrgs(asList(lines))}>
+                    Use one per line instead
+                  </button>
                 </p>
               )}
             </>
           ) : (
-            <div className="divide-y rounded-lg border">
-              {orgs.length === 0 && <p className="p-3 text-sm text-muted-foreground">No organisations found in that. Go back and try again.</p>}
+            <section aria-label="Found">
+              <h2 className="mb-1 text-xs text-muted-foreground">
+                {orgs.length ? `${valid.length} organisation${valid.length === 1 ? '' : 's'}` : 'No organisations found in that. Go back and try again.'}
+              </h2>
               {orgs.map((o, i) => (
-                <div key={i} className="grid gap-1.5 p-2.5">
-                  <div className="flex items-center gap-2">
-                    <Input
-                      autoFocus={i === 0}
-                      value={o.name}
-                      onChange={(e) => edit(i, { name: e.target.value })}
-                      aria-label="Organisation"
-                      className="h-8 flex-1 font-medium"
-                    />
-                    {o.website && (
-                      <span className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
-                        <Globe className="size-3" /> {o.website}
-                      </span>
-                    )}
-                    <Button variant="ghost" size="icon-sm" title={`Remove ${o.name}`} onClick={() => setOrgs(orgs.filter((_, j) => j !== i))}>
-                      <X />
-                    </Button>
-                  </div>
-                  <Input
+                <div key={i} className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 border-b border-border/50 py-2.5">
+                  <input
+                    autoFocus={i === 0}
+                    value={o.name}
+                    onChange={(e) => edit(i, { name: e.target.value })}
+                    aria-label="Organisation"
+                    className={`field-sizing-content min-w-24 font-medium ${field}`}
+                  />
+                  {o.website && <span className="text-sm text-muted-foreground">{o.website}</span>}
+                  <input
                     value={o.note}
                     onChange={(e) => edit(i, { note: e.target.value })}
                     aria-label={`Note for ${o.name}`}
-                    placeholder="Anything to say or look for with this one (optional)"
-                    className="h-8 text-muted-foreground"
+                    placeholder="Anything to say or look for (optional)"
+                    className={`min-w-48 flex-1 text-sm text-muted-foreground ${field}`}
                   />
+                  <button title={`Remove ${o.name}`} onClick={() => setOrgs(orgs.filter((_, j) => j !== i))} className="text-muted-foreground/60 hover:text-foreground">
+                    <X className="size-3.5" />
+                  </button>
                 </div>
               ))}
-            </div>
+            </section>
           )}
 
-          <div className="flex flex-wrap items-center gap-3 rounded-lg border bg-muted/30 px-3 py-2.5 text-sm">
-            <span className="min-w-0 flex-1 text-muted-foreground">
-              {campaign.researchOnly
-                ? 'Each one is researched from the folder’s context and this campaign’s notes. You write each email, or press ⌘R to have the AI draft it.'
-                : `Each one is researched and drafted from the folder’s context and this campaign’s notes, written in the “${voiceName}” voice.`}
-            </span>
-            <Select value={campaign.researchOnly ? 'research' : 'draft'} onValueChange={(v) => onResearchOnly(v === 'research')}>
-              <SelectTrigger size="sm" className="w-48" aria-label="Drafting">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="research">Research only</SelectItem>
-                <SelectItem value="draft">Research and draft</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div className="flex justify-end gap-2">
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-3 text-sm">
             {orgs ? (
               <>
-                <Button variant="ghost" onClick={() => setOrgs(null)}>
-                  <ArrowLeft /> Back
+                <Button disabled={!valid.length} onClick={submit} className="h-9 rounded-full px-4">
+                  Research {valid.length || ''} <span className="opacity-60">⌘↵</span>
                 </Button>
-                <Button disabled={!valid.length} onClick={submit}>
-                  <Sparkles /> Research {valid.length || ''}
-                  <ButtonKeys keys="⌘ ↵" primary />
-                </Button>
+                <button onClick={() => setOrgs(null)} className="text-muted-foreground hover:text-foreground">
+                  Edit the text
+                </button>
               </>
             ) : (
-              <Button disabled={!lines.length || busy} onClick={next}>
-                {busy ? <Loader2 className="animate-spin" /> : <ArrowRight />} {busy ? 'Reading…' : 'Next'}
-                {!busy && <ButtonKeys keys="⌘ ↵" primary />}
+              <Button disabled={!lines.length || busy} onClick={next} className="h-9 rounded-full px-4">
+                {busy && <Loader2 className="animate-spin" />}
+                {busy ? 'Reading…' : 'Next'} {!busy && <span className="opacity-60">⌘↵</span>}
               </Button>
             )}
+            <span className="text-muted-foreground">
+              {campaign.researchOnly
+                ? 'Research only: you write each email, or press ⌘R to have the AI draft it.'
+                : `Research and draft, in the “${voiceName}” voice.`}{' '}
+              <button onClick={() => onResearchOnly(!campaign.researchOnly)} className="text-foreground hover:underline">
+                Change
+              </button>
+            </span>
           </div>
         </div>
       </div>

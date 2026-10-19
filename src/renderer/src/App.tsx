@@ -125,7 +125,11 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     persist({ version: 1, prospects, folders, campaigns, voices, campaignId, selectedId, onboarded, emailStyle, snippets })
   }, [prospects, folders, campaigns, voices, campaignId, selectedId, onboarded, emailStyle, snippets])
   const [tab, setTab] = useState<Tab>('chat')
-  const [filter, setFilter] = useState<Filter>('all')
+  // Most of the time you're working through what needs review.
+  const [filter, setFilter] = useState<Filter>('review')
+  // The campaign switcher (⌘O) and the History menu (⌘⇧H).
+  const [switcherOpen, setSwitcherOpen] = useState(false)
+  const [historyOpen, setHistoryOpen] = useState(false)
   const [showDiff, setShowDiff] = useState(false)
   // What's typed on the Add page, kept while you look elsewhere.
   const [addText, setAddText] = useState('')
@@ -175,9 +179,9 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
   const inCampaign = prospects.filter((p) => p.campaignId === campaign.id && !p.deletedAt)
   // Undefined when the campaign is empty (e.g. just created).
   const selected = inCampaign.find((p) => p.id === selectedId)
-  const shown = inCampaign.filter((p) => inFilter[filter](p.status))
+  const shown = inCampaign.filter(inFilter[filter])
   const update = (id: string, fn: (p: Prospect) => Prospect) => setProspects((ps) => ps.map((p) => (p.id === id ? fn(p) : p)))
-  const overlayOpen = palette || help || (!rightDocks && rightOpen)
+  const overlayOpen = palette || help || switcherOpen || historyOpen || (!rightDocks && rightOpen)
   // Latest state for callbacks that run later (timers, undo closures).
   const prospectsRef = useRef(prospects)
   prospectsRef.current = prospects
@@ -936,10 +940,34 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     if (!selected) return
     for (const m of activeChat(selected)?.messages ?? [])
       for (const pr of m.proposals ?? [])
-        if (pr.state === 'pending') {
-          setTab('chat')
-          return resolveProposal(m.id, pr.id, accept)
-        }
+        if (pr.state === 'pending') return resolveProposal(m.id, pr.id, accept)
+  }
+
+  // Accept all / Reject all on one reply's suggestions, as a single undo step.
+  // Accepting skips any whose text has changed since.
+  const resolveAllProposals = (msgId: string, accept: boolean) => {
+    if (!selected) return
+    const pid = selected.id
+    const msg = selected.chats.flatMap((c) => c.messages).find((m) => m.id === msgId)
+    const todo = (msg?.proposals ?? []).filter((x) => x.state === 'pending' && (!accept || hasText(selected, x.old)))
+    if (!todo.length) return
+    const state = accept ? 'accepted' : 'rejected'
+    const apply = () =>
+      todo.forEach((x) => {
+        if (accept) swapText(pid, x.old, x.new)
+        setProposalState(pid, msgId, x.id, state)
+      })
+    apply()
+    record(
+      `${accept ? 'Accepted' : 'Rejected'} ${todo.length} suggestions`,
+      pid,
+      () =>
+        todo.forEach((x) => {
+          setProposalState(pid, msgId, x.id, 'pending')
+          if (accept && hasText(get(pid), x.new)) swapText(pid, x.new, x.old)
+        }),
+      apply,
+    )
   }
 
   const setRecipients = (to: string[]) => {
@@ -1047,8 +1075,16 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
         setPalette((v) => !v)
         return
       }
+      // ⌘O: switch campaign or folder, from anywhere in the email view.
+      if (mod && e.key.toLowerCase() === 'o' && view !== 'settings') {
+        e.preventDefault()
+        setSwitcherOpen((v) => !v)
+        return
+      }
       // Dialogs and sheets handle their own Escape; don't act behind them.
       if (overlayOpen) return
+      // Esc stops a reply that's being written, before anything else it does.
+      if (e.key === 'Escape' && replying && selected && view === 'email') return stopJob(chatJobs.current, selected.id)
       if (e.key === 'Escape' && typing) return el.blur()
 
       if (mod && e.key.toLowerCase() === 'z') {
@@ -1090,6 +1126,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
         if (key === 'backspace' && e.shiftKey) return run(() => resolveNextProposal(false))
         if (key === '/') return run(toggleChatFocus)
         if (key === 'b' && e.shiftKey) return run(() => togglePanel('brief'))
+        if (key === 'h' && e.shiftKey) return run(() => selected && hasEmail(selected) && setHistoryOpen((v) => !v))
         // ⌘\\ (left sidebar) is handled by shadcn's SidebarProvider.
         if ((key === '\\' || key === '|') && e.shiftKey) return run(() => setRightOpen((v) => !v))
         if (key === ']') return run(() => step(1))
@@ -1105,9 +1142,10 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
         k: () => step(-1),
         ArrowUp: () => step(-1),
         n: goToNextReview,
-        '1': () => setFilter('all'),
-        '2': () => setFilter('review'),
-        '3': () => setFilter('saved'),
+        '1': () => setFilter('review'),
+        '2': () => setFilter('write'),
+        '3': () => setFilter('all'),
+        '4': () => setFilter('saved'),
         e: editBody,
         Enter: editBody,
         t: addTopRecipient,
@@ -1563,6 +1601,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
       onAddRecipient={addRecipient}
       onNote={(note) => update(selected.id, (p) => ({ ...p, note }))}
       onProposal={resolveProposal}
+      onProposalsAll={resolveAllProposals}
       onRevertProposal={revertProposal}
       onSend={sendChat}
       onStop={() => stopJob(chatJobs.current, selected.id)}
@@ -1578,7 +1617,6 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     <Editor
       prospect={selected}
       bodyStyle={emailStyleVars(emailStyle) as CSSProperties}
-      from={settings?.mail?.fromEmail ? `${settings.mail.fromName ? `${settings.mail.fromName} ` : ''}<${settings.mail.fromEmail}>` : ''}
       voiceName={voice.name}
       attachments={campaign.attachments}
       queuePosition={queuePosition}
@@ -1588,13 +1626,13 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
       onRegenerate={regenerate}
       onRestoreVersion={restoreVersion}
       onDeleteVersion={deleteVersion}
+      historyOpen={historyOpen}
+      onHistoryOpenChange={setHistoryOpen}
       onChange={(patch) => (patch.to ? setRecipients(patch.to) : update(selected.id, (p) => ({ ...p, ...patch })))}
       onRetry={(website) => update(selected.id, (p) => ({ ...p, status: 'queued', progress: [], error: undefined, domain: website || p.domain }))}
       onStopResearch={() => stopJob(researchJobs.current, selected.id)}
       onSave={save}
       panelTab={rightOpen ? tab : null}
-      showPanelButtons={!(rightDocks && rightOpen)}
-      pendingSuggestions={(activeChat(selected)?.messages ?? []).flatMap((m) => m.proposals ?? []).filter((x) => x.state === 'pending').length}
       onPanel={togglePanel}
       onDismissComment={dismissComment}
       proposals={(activeChat(selected)?.messages ?? []).flatMap((m) => (m.proposals ?? []).filter((x) => x.state === 'pending').map((x) => ({ ...x, msgId: m.id })))}
@@ -1647,7 +1685,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
   return (
     <TooltipProvider delayDuration={300}>
       <AgentProvider provider={settings?.aiProvider}>
-      <SidebarProvider open={leftOpen} onOpenChange={setLeftOpen} className="h-svh min-h-0 overflow-hidden">
+      <SidebarProvider open={leftOpen} onOpenChange={setLeftOpen} className="h-svh min-h-0 overflow-hidden" style={{ '--sidebar-width': '17rem' } as CSSProperties}>
         {view === 'settings' ? (
           <>
             <SettingsSidebar
@@ -1703,33 +1741,31 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
           <>
             <AppSidebar
               prospects={inCampaign}
-              allProspects={prospects.filter((p) => !p.deletedAt)}
-              campaigns={aliveCampaigns}
-              campaignId={campaign.id}
-              voices={aliveVoices}
-              onDeleteProspect={deleteProspect}
-              onDeleteCampaign={deleteCampaign}
-              trashCount={trash.length}
-              onOpenTrash={() => openSettings({ kind: 'trash' })}
-              mailAddress={mailReady ? settings?.mail?.fromEmail : undefined}
-              onOpenSettings={() => openSettings()}
-              onSwitchCampaign={switchCampaign}
-              onEditCampaign={(id) => openSettings({ kind: 'campaign', id })}
-              onNewCampaign={() => openSettings({ kind: 'campaign', id: createCampaign() })}
-              folders={aliveFolders}
-              onEditFolder={(id) => openSettings({ kind: 'folder', id })}
-              onNewFolder={() => openSettings({ kind: 'folder', id: createFolder() })}
-              onSetVoice={setVoice}
-              onEditVoices={editVoices}
               selectedId={selectedId}
               onSelect={select}
               onAdd={() => openAdd()}
+              onDeleteProspect={deleteProspect}
               filter={filter}
               onFilter={setFilter}
-              theme={theme}
-              onToggleTheme={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
               onOpenPalette={() => setPalette(true)}
-              onShowKeys={() => setHelp(true)}
+              onOpenSettings={() => openSettings()}
+              mailReady={mailReady}
+              onConnectMail={() => openSettings({ kind: 'mailbox' })}
+              switcher={{
+                open: switcherOpen,
+                onOpenChange: setSwitcherOpen,
+                folders: aliveFolders,
+                campaigns: aliveCampaigns,
+                allProspects: prospects.filter((p) => !p.deletedAt),
+                campaignId: campaign.id,
+                voices: aliveVoices,
+                onSwitchCampaign: switchCampaign,
+                onEditCampaign: (id) => openSettings({ kind: 'campaign', id }),
+                onEditFolder: (id) => openSettings({ kind: 'folder', id }),
+                onNewCampaign: () => openSettings({ kind: 'campaign', id: createCampaign() }),
+                onNewFolder: () => openSettings({ kind: 'folder', id: createFolder() }),
+                onSetVoice: setVoice,
+              }}
             />
             <SidebarInset className="min-w-0 overflow-hidden">
               {view === 'add' ? (
@@ -1756,7 +1792,8 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
                   <ResizablePanel id="main" minSize={420}>
                     {main}
                   </ResizablePanel>
-                  <ResizableHandle />
+                  {/* Still draggable, but no line: the column sits on the page like the sidebar. */}
+                  <ResizableHandle className="bg-transparent" />
                   <ResizablePanel
                     id="panel"
                     panelRef={rightPanelRef}

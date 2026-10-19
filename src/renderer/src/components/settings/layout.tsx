@@ -5,9 +5,9 @@ import type { ReactNode } from 'react'
 export function SettingsSection({ title, description, children }: { title?: string; description?: ReactNode; children: ReactNode }) {
   return (
     <section className="space-y-2">
-      {title && <h2 className="px-1 text-sm text-muted-foreground">{title}</h2>}
-      {description && <p className="px-1 text-sm text-muted-foreground">{description}</p>}
-      <div className="divide-y rounded-xl border bg-card">{children}</div>
+      {title && <h2 className="text-xs text-muted-foreground">{title}</h2>}
+      {description && <p className="text-sm text-muted-foreground">{description}</p>}
+      <div className="divide-y divide-border/60">{children}</div>
     </section>
   )
 }
@@ -28,7 +28,7 @@ export function SettingsRow({
   htmlFor?: string
 }) {
   return (
-    <div className={cn('flex gap-4 px-4 py-3.5', stacked ? 'flex-col' : 'items-center')}>
+    <div className={cn('flex gap-4 py-3.5', stacked ? 'flex-col' : 'items-center')}>
       <div className="min-w-0 flex-1">
         <label htmlFor={htmlFor} className="text-sm font-medium">
           {title}
@@ -42,5 +42,5 @@ export function SettingsRow({
 
 // Freeform content inside a section card (lists, previews).
 export function SettingsBlock({ children, className }: { children: ReactNode; className?: string }) {
-  return <div className={cn('px-4 py-3.5', className)}>{children}</div>
+  return <div className={cn('py-3.5', className)}>{children}</div>
 }

@@ -55,6 +55,7 @@ export function CommandPalette({ open, onOpenChange, commands }: { open: boolean
 export function globalShortcuts(): [string, string][] {
   return [
     ['⌘ K', 'Search & commands (with text selected in the email: add a link)'],
+    ['⌘ O', 'Switch campaign or folder'],
     ['⌘ ↵', 'Save to drafts and go to the next one'],
     ['⌘ Z', 'Undo (typing or actions, newest first)'],
     ['⌘ ⇧ Z', 'Redo'],
@@ -68,10 +69,11 @@ export function globalShortcuts(): [string, string][] {
     ['⌘ ⇧ ↵', 'Accept next suggestion'],
     ['⌘ ⇧ ⌫', 'Reject next suggestion'],
     ['⌘ D', 'Compare with the AI draft'],
+    ['⌘ ⇧ H', 'History'],
     ['⌘ ,', 'Settings (mailbox and AI agent)'],
-    ['⌘ R', 'Regenerate draft'],
+    ['⌘ R', 'Regenerate, or write with AI'],
     ['⌘ B', 'Bold (also ⌘ I italic, ⌘ ⇧ S strikethrough)'],
-    ['esc', 'Leave the text box'],
+    ['esc', 'Stop the AI’s reply, or leave the text box'],
   ]
 }
 
@@ -85,7 +87,7 @@ export const NAV_SHORTCUTS: [string, string][] = [
   ['T', 'Add the top suggested recipient'],
   ['A', 'Accept next suggestion'],
   ['X', 'Reject next suggestion'],
-  ['1 2 3', 'Filter: all / to review / saved'],
+  ['1 2 3 4', 'Filter: to review / to write / all / saved'],
   ['C', 'Add to campaign'],
   ['⌫', 'Delete organisation (goes to Deleted items)'],
   ['?', 'This list'],
