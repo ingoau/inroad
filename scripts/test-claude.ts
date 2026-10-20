@@ -145,6 +145,10 @@ if (which === 'tools') {
     'add-comments',
     'ha_call_service',
     'search_and_delete',
+    'search_and_replace',
+    'sql_query',
+    'find_and_merge',
+    'execute_query',
   ])
     assert.ok(!isReadOnlyTool(t), `${t} should be denied`)
   console.log('✓ connector tool filter allows reads and blocks writes')

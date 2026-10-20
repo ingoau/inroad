@@ -45,7 +45,7 @@ export function FolderFields({ folder, onChange, autoFocus }: { folder: FolderIn
     setError('')
     const res = await window.api.claude.lookupEvent({ jobId: job.current, name: folder.name.trim(), hint: folder.notes.trim() || undefined })
     setBusy(false)
-    if (!res.ok) return setError(res.error)
+    if (!res.ok) return setError(res.error === 'Stopped.' ? '' : res.error)
     setQuestions(res.value.questions.map((q) => ({ ...q, answer: '' })))
     // Keep anything the user had written, above what Claude found.
     const mine = latest.current.notes.trim()
@@ -84,9 +84,15 @@ export function FolderFields({ folder, onChange, autoFocus }: { folder: FolderIn
             onKeyDown={(e) => e.key === 'Enter' && lookUp()}
             placeholder="e.g. Hack the Harbour 2026"
           />
-          <Button variant="outline" onClick={lookUp} disabled={busy || !folder.name.trim() || !window.api}>
-            {busy ? <Loader2 className="animate-spin" /> : <Sparkles />} Find details
-          </Button>
+          {busy ? (
+            <Button variant="outline" onClick={() => void window.api?.claude.cancel(job.current)}>
+              <Loader2 className="animate-spin" /> Stop
+            </Button>
+          ) : (
+            <Button variant="outline" onClick={lookUp} disabled={!folder.name.trim() || !window.api}>
+              <Sparkles /> Find details
+            </Button>
+          )}
         </div>
         <p className="text-xs text-muted-foreground">
           {provider === 'opencode'

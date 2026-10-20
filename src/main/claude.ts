@@ -305,7 +305,7 @@ export async function draft(cfg: ClaudeConfig, req: DraftRequest): Promise<Resul
 // can do anything, so only ones that look read-only by name are allowed.
 const READ_WORDS = /^(search|read|get|list|fetch|find|query|view|lookup|retrieve|describe|show|open)$/
 const WRITE_WORDS =
-  /^(send|post|create|delete|update|write|reply|archive|upload|schedule|add|remove|set|draft|move|complete|uncomplete|rsvp|react|edit|invite|share|publish|forward|mark|manage|import|export|restart|call|run|bulk)$/
+  /^(send|post|create|delete|update|write|reply|archive|upload|schedule|add|remove|set|draft|move|complete|uncomplete|rsvp|react|edit|invite|share|publish|forward|mark|manage|import|export|restart|call|run|bulk|replace|insert|append|execute|exec|merge|approve|submit|trash|sql|mutate|mutation|patch|put|assign|cancel|close|transfer|pay|invoke|trigger|apply|rename|duplicate|copy|restore|purge|clear|reset|join|leave|accept|decline)$/
 export function isReadOnlyTool(name: string) {
   const words = name.toLowerCase().split(/[_\-\s]+/)
   return words.some((w) => READ_WORDS.test(w)) && !words.some((w) => WRITE_WORDS.test(w))
@@ -318,18 +318,19 @@ const connectorName = (tool: string) =>
     ?.replace(/^claude_ai_/, '')
     .replace(/_/g, ' ') ?? tool
 
-const WEB_TOOLS = ['WebSearch', 'WebFetch', 'ToolSearch']
-
 // Loads the user's claude.ai connectors and sends every tool call through
-// canUseTool: the web tools and `allowed` (Inroad's own tools) go through,
-// connector tools only if they look read-only.
-function readOnlyConnectors(allowed: string[] = []): Partial<Options> {
+// canUseTool: the built-in tools and `allowed` (Inroad's own tools) go
+// through, connector tools only if they look read-only. `webFetch: false`
+// leaves out page fetches: with private data from connectors in reach, a
+// fetched page could tell the model to send that data to a URL it fetches next.
+function readOnlyConnectors(allowed: string[] = [], { webFetch = true } = {}): Partial<Options> {
+  const builtIn = webFetch ? ['WebSearch', 'WebFetch', 'ToolSearch'] : ['WebSearch', 'ToolSearch']
   return {
-    tools: WEB_TOOLS,
+    tools: builtIn,
     permissionMode: 'default',
     settings: { disableClaudeAiConnectors: false },
     canUseTool: async (toolName, input) =>
-      WEB_TOOLS.includes(toolName) || allowed.includes(toolName) || (toolName.startsWith('mcp__') && isReadOnlyTool(toolName.split('__').at(-1) ?? ''))
+      builtIn.includes(toolName) || allowed.includes(toolName) || (toolName.startsWith('mcp__') && isReadOnlyTool(toolName.split('__').at(-1) ?? ''))
         ? { behavior: 'allow', updatedInput: input }
         : { behavior: 'deny', message: 'Inroad only lets you read and search here, not change anything.' },
   }
@@ -357,7 +358,7 @@ The email body is markdown, exactly as stored: ${MARKDOWN} Links and formatting 
 
 The user may point at a passage they highlighted in the email; it's quoted with their message. Read it as "this part", and keep any edits to it unless they ask for more.
 
-To change the email, call the propose_edit tool: quote the exact text to replace (copied verbatim from the subject or body, long enough to be unique, within a single paragraph) and give the replacement. To delete something, quote it with a few surrounding words and leave those words in the replacement. Each call becomes a suggestion the user can accept or reject, so prefer a few focused edits over rewriting everything, and stay in the user's voice. When the user asks what you think, wants something checked, or asks why something is there, call add_comment to pin your answer to the phrase it's about rather than only describing it in your reply. Don't repeat comments the email already has. If the user asks for something the brief doesn't cover, look it up: WebSearch and WebFetch for the web, and their connected tools (Slack, email, docs, notes…) for anything about their own work or contacts. Only read and search with those tools; never send, post, create or change anything. Keep your messages short.`
+To change the email, call the propose_edit tool: quote the exact text to replace (copied verbatim from the subject or body, long enough to be unique, within a single paragraph) and give the replacement. To delete something, quote it with a few surrounding words and leave those words in the replacement. Each call becomes a suggestion the user can accept or reject, so prefer a few focused edits over rewriting everything, and stay in the user's voice. When the user asks what you think, wants something checked, or asks why something is there, call add_comment to pin your answer to the phrase it's about rather than only describing it in your reply. Don't repeat comments the email already has. If the user asks for something the brief doesn't cover, look it up: WebSearch for the web, and their connected tools (Slack, email, docs, notes…) for anything about their own work or contacts. Only read and search with those tools; never send, post, create or change anything. Keep your messages short.`
 
 export async function chat(cfg: ClaudeConfig, req: ChatRequest, emit: Emit, abort?: AbortController): Promise<Result<ChatResult>> {
   return guard(async () => {
@@ -431,7 +432,7 @@ export async function chat(cfg: ClaudeConfig, req: ChatRequest, emit: Emit, abor
         baseOptions(cfg, {
           systemPrompt: CHAT_SYSTEM,
           mcpServers: { email: editor },
-          ...readOnlyConnectors(['mcp__email__propose_edit', 'mcp__email__add_comment']),
+          ...readOnlyConnectors(['mcp__email__propose_edit', 'mcp__email__add_comment'], { webFetch: false }),
           effort: 'medium',
           maxTurns: 16,
           includePartialMessages: true,

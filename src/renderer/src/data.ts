@@ -154,6 +154,9 @@ export function snippetsFor(snippets: Snippet[], campaign: Pick<Campaign, 'id' |
     .filter(
       (s) =>
         !s.deletedAt &&
+        // A snippet still being written in Settings has nothing to insert yet.
+        !!s.name.trim() &&
+        !!s.text.trim() &&
         (s.scope.kind === 'global' || (s.scope.kind === 'folder' && s.scope.id === campaign.folderId) || (s.scope.kind === 'campaign' && s.scope.id === campaign.id)),
     )
     .sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name))

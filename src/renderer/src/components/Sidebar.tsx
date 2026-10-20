@@ -176,6 +176,11 @@ export interface SwitcherProps {
 // The campaign name at the top of the sidebar; click it or press ⌘O to switch
 // campaign, jump between folders, or start a new one.
 function CampaignSwitcher(props: SwitcherProps) {
+  // On phones the sidebar is a sheet; open it so there's something to hang the switcher off.
+  const { isMobile, setOpenMobile } = useSidebar()
+  useEffect(() => {
+    if (props.open && isMobile) setOpenMobile(true)
+  }, [props.open, isMobile, setOpenMobile])
   const campaign = props.campaigns.find((c) => c.id === props.campaignId)!
   const folder = props.folders.find((f) => f.id === campaign.folderId)
   const voice = props.voices.find((v) => v.id === campaign.voiceId) ?? props.voices[0]

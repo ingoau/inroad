@@ -85,13 +85,15 @@ export function Editor(props: Props) {
 
   // Suggestions for the subject show under it; the rest go inline in the body.
   const subjectProposals = props.proposals.filter((x) => p.subject.includes(x.old) && !p.body.includes(x.old))
+  // The one ⌘⇧↵ / ⌘⇧⌫ act on is the first pending suggestion, wherever it is.
+  const nextId = props.proposals[0]?.id
   const inline = useMemo(
     () =>
       props.proposals
         .filter((x) => !subjectProposals.includes(x))
-        .map((x, i) => ({ id: `${x.msgId}:${x.id}`, old: plainText(x.old), new: plainText(x.new), reason: x.reason, next: i === 0 })),
+        .map((x) => ({ id: `${x.msgId}:${x.id}`, old: plainText(x.old), new: plainText(x.new), reason: x.reason, next: x.id === nextId })),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [JSON.stringify(props.proposals), p.subject],
+    [JSON.stringify(props.proposals), p.subject, p.body],
   )
   const resolveInline = (id: string, accept: boolean) => {
     const [msgId, propId] = id.split(':')

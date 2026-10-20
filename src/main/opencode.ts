@@ -124,7 +124,9 @@ async function run(cfg: OpencodeConfig, prompt: string, handlers: Handlers = {},
 
   const child = spawn(cfg.executable, args, { cwd: cfg.workspace, env: { ...process.env, PWD: cfg.workspace } })
   const stop = () => child.kill()
-  signal?.addEventListener('abort', stop, { once: true })
+  // Stopped before the process even started: there's no abort event left to hear.
+  if (signal?.aborted) stop()
+  else signal?.addEventListener('abort', stop, { once: true })
   child.stdin.on('error', () => {})
   child.stdin.end(prompt)
 

@@ -1,6 +1,5 @@
 import { Sidebar, SidebarContent, SidebarHeader, SidebarInput } from '@/components/ui/sidebar'
 import { cn } from '@/lib/utils'
-import { Bot, Database, Keyboard, Mail, Palette, Slash, Trash2, Type, type LucideIcon } from 'lucide-react'
 import { useState } from 'react'
 import type { Campaign, Folder, Voice } from '../../data'
 import { Shortcut } from '../hint'
@@ -9,15 +8,15 @@ export type SettingsPage =
   | { kind: 'mailbox' | 'email' | 'snippets' | 'claude' | 'appearance' | 'shortcuts' | 'trash' | 'data' }
   | { kind: 'folder' | 'campaign' | 'voice'; id: string }
 
-export const GENERAL_PAGES: { kind: Exclude<SettingsPage['kind'], 'folder' | 'campaign' | 'voice'>; title: string; Icon: LucideIcon }[] = [
-  { kind: 'mailbox', title: 'Mailbox', Icon: Mail },
-  { kind: 'email', title: 'Email style', Icon: Type },
-  { kind: 'snippets', title: 'Snippets', Icon: Slash },
-  { kind: 'claude', title: 'AI agent', Icon: Bot },
-  { kind: 'appearance', title: 'Appearance', Icon: Palette },
-  { kind: 'shortcuts', title: 'Keyboard shortcuts', Icon: Keyboard },
-  { kind: 'trash', title: 'Deleted items', Icon: Trash2 },
-  { kind: 'data', title: 'Data', Icon: Database },
+export const GENERAL_PAGES: { kind: Exclude<SettingsPage['kind'], 'folder' | 'campaign' | 'voice'>; title: string }[] = [
+  { kind: 'mailbox', title: 'Mailbox' },
+  { kind: 'email', title: 'Email style' },
+  { kind: 'snippets', title: 'Snippets' },
+  { kind: 'claude', title: 'AI agent' },
+  { kind: 'appearance', title: 'Appearance' },
+  { kind: 'shortcuts', title: 'Keyboard shortcuts' },
+  { kind: 'trash', title: 'Deleted items' },
+  { kind: 'data', title: 'Data' },
 ]
 
 // Replaces the app sidebar while Settings is open: settings pages, then

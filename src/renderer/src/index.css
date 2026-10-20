@@ -174,7 +174,7 @@
 /* macOS traffic lights sit over the top-left: push the sidebar header down, and
    when the sidebar is collapsed to icons, nudge the email header's content right. */
 [data-platform="darwin"] [data-slot="sidebar-header"] { padding-top: 2.5rem; }
-[data-platform="darwin"] [data-slot="sidebar"][data-state="collapsed"] ~ [data-slot="sidebar-inset"] header { padding-left: 2.75rem; }
+[data-platform="darwin"] [data-slot="sidebar"][data-state="collapsed"] ~ [data-slot="sidebar-inset"] header { padding-left: 5.25rem; }
 
 /* Claude's chat replies (markdown). */
 .chat-md > * + * {

@@ -47,9 +47,9 @@ export function activeChat(p: Prospect): ChatThread | undefined {
 }
 
 // Text that acts like a link: quiet until hovered.
-function Quiet({ onClick, active, children, className }: { onClick?: () => void; active?: boolean; children: ReactNode; className?: string }) {
+function Quiet({ onClick, active, title, children, className }: { onClick?: () => void; active?: boolean; title?: string; children: ReactNode; className?: string }) {
   return (
-    <button onClick={onClick} className={cn('text-muted-foreground transition-colors hover:text-foreground', active && 'text-foreground', className)}>
+    <button onClick={onClick} title={title} className={cn('text-muted-foreground transition-colors hover:text-foreground', active && 'text-foreground', className)}>
       {children}
     </button>
   )
@@ -57,16 +57,18 @@ function Quiet({ onClick, active, children, className }: { onClick?: () => void;
 
 // A borderless column beside the email: the brief or the chat, never both.
 export function RightPanel(props: Props) {
-  const { prospect: p, tab, onTab } = props
+  const { prospect: p, tab, onClose } = props
+  // Clicking the tab that's already showing closes the column, like the links in the email's top bar.
+  const onTab = (t: Tab) => (t === tab ? onClose() : props.onTab(t))
   const thread = activeChat(p)
   const threads = p.chats.filter((c) => !c.deletedAt)
   return (
     <div id="side-panel" className="@container/panel flex h-full min-w-0 flex-col bg-background text-sm">
       <div className="drag flex h-12 shrink-0 items-center gap-5 px-6 whitespace-nowrap">
-        <Quiet active={tab === 'brief'} onClick={() => onTab('brief')} className={cn(tab === 'brief' && 'shadow-[inset_0_-1px_0_currentColor]')}>
+        <Quiet active={tab === 'brief'} onClick={() => onTab('brief')} title={tab === 'brief' ? 'Hide' : undefined} className={cn(tab === 'brief' && 'shadow-[inset_0_-1px_0_currentColor]')}>
           Brief <Shortcut keys="⌘⇧B" className="hidden @xs/panel:inline" />
         </Quiet>
-        <Quiet active={tab === 'chat'} onClick={() => onTab('chat')} className={cn(tab === 'chat' && 'shadow-[inset_0_-1px_0_currentColor]')}>
+        <Quiet active={tab === 'chat'} onClick={() => onTab('chat')} title={tab === 'chat' ? 'Hide' : undefined} className={cn(tab === 'chat' && 'shadow-[inset_0_-1px_0_currentColor]')}>
           Chat <Shortcut keys="⌘/" className="hidden @xs/panel:inline" />
         </Quiet>
         <div className="flex-1" />

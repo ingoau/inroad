@@ -73,7 +73,8 @@ const MAX_CONCURRENT = 3
 const UNDO_GRACE_MS = 5000
 type Theme = 'dark' | 'light'
 
-const needsReview = (p: Prospect) => p.status === 'drafted' || p.status === 'edited'
+// What save-and-next and N move on to: drafts to review, and research-only emails still to write.
+const needsReview = (p: Prospect) => (inFilter.review(p) && p.status !== 'failed') || inFilter.write(p)
 // Claude's comments, stamped for storing on a prospect.
 const stamp = (comments: EmailComment[], by: Comment['by']): Comment[] => comments.map((c) => ({ ...c, id: crypto.randomUUID(), by, at: Date.now() }))
 
@@ -183,7 +184,9 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
   const selected = inCampaign.find((p) => p.id === selectedId)
   const shown = inCampaign.filter(inFilter[filter])
   const update = (id: string, fn: (p: Prospect) => Prospect) => setProspects((ps) => ps.map((p) => (p.id === id ? fn(p) : p)))
-  const overlayOpen = palette || help || switcherOpen || historyOpen || (!rightDocks && rightOpen)
+  // The side column is an overlay (a sheet) only on narrower windows, and only while it's showing.
+  const sheetOpen = !rightDocks && rightOpen && !!selected && view === 'email'
+  const overlayOpen = palette || help || switcherOpen || historyOpen || sheetOpen
   // Latest state for callbacks that run later (timers, undo closures).
   const prospectsRef = useRef(prospects)
   prospectsRef.current = prospects
@@ -247,6 +250,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
 
   // Running requests the user can stop, by prospect: research, and chat replies.
   const researchJobs = useRef(new Map<string, string>())
+  // Chat replies are keyed by chat thread, since each thread can have its own reply running.
   const chatJobs = useRef(new Map<string, string>())
   const stopJob = (jobs: Map<string, string>, pid: string) => {
     const jobId = jobs.get(pid)
@@ -905,13 +909,13 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     }))
 
   // Suggestions quote plain text from either the subject or the body.
-  const swapText = (pid: string, from: string, to: string) =>
-    update(pid, (p) => {
-      if (p.subject.includes(from)) return { ...p, subject: p.subject.replace(from, () => to) }
-      // Re-normalise so the stored text matches what the editor would write.
-      const body = normalizeMarkdown(p.body.replace(from, () => to))
-      return { ...p, body, status: statusAfter(p, body) }
-    })
+  const swapIn = (p: Prospect, from: string, to: string): Prospect => {
+    if (p.subject.includes(from)) return { ...p, subject: p.subject.replace(from, () => to) }
+    // Re-normalise so the stored text matches what the editor would write.
+    const body = normalizeMarkdown(p.body.replace(from, () => to))
+    return { ...p, body, status: statusAfter(p, body) }
+  }
+  const swapText = (pid: string, from: string, to: string) => update(pid, (p) => swapIn(p, from, to))
 
   const resolveProposal = (msgId: string, propId: string, accept: boolean) => {
     if (!selected) return
@@ -946,29 +950,39 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
   }
 
   // Accept all / Reject all on one reply's suggestions, as a single undo step.
-  // Accepting skips any whose text has changed since.
+  // Suggestions are applied one after another, each checked against the email
+  // as the earlier ones left it; any whose text is gone by then stay pending.
   const resolveAllProposals = (msgId: string, accept: boolean) => {
-    if (!selected) return
-    const pid = selected.id
-    const msg = selected.chats.flatMap((c) => c.messages).find((m) => m.id === msgId)
-    const todo = (msg?.proposals ?? []).filter((x) => x.state === 'pending' && (!accept || hasText(selected, x.old)))
-    if (!todo.length) return
+    const start = selected && get(selected.id)
+    if (!start) return
+    const pid = start.id
+    const msg = start.chats.flatMap((c) => c.messages).find((m) => m.id === msgId)
+    const pending = (msg?.proposals ?? []).filter((x) => x.state === 'pending')
+    let after = start
+    const done = pending.filter((x) => {
+      if (!accept) return true
+      if (!hasText(after, x.old)) return false
+      after = swapIn(after, x.old, x.new)
+      return true
+    })
+    if (!done.length) return notify({ text: 'Couldn’t apply: that text has changed since the AI suggested it' })
     const state = accept ? 'accepted' : 'rejected'
-    const apply = () =>
-      todo.forEach((x) => {
-        if (accept) swapText(pid, x.old, x.new)
-        setProposalState(pid, msgId, x.id, state)
-      })
+    const email = { subject: after.subject, body: after.body, status: after.status }
+    const apply = () => {
+      if (accept) update(pid, (p) => ({ ...p, ...email }))
+      done.forEach((x) => setProposalState(pid, msgId, x.id, state))
+    }
     apply()
+    const skipped = pending.length - done.length
     record(
-      `${accept ? 'Accepted' : 'Rejected'} ${todo.length} suggestions`,
+      `${accept ? 'Accepted' : 'Rejected'} ${done.length} suggestion${done.length === 1 ? '' : 's'}`,
       pid,
-      () =>
-        todo.forEach((x) => {
-          setProposalState(pid, msgId, x.id, 'pending')
-          if (accept && hasText(get(pid), x.new)) swapText(pid, x.new, x.old)
-        }),
+      () => {
+        if (accept) update(pid, (p) => ({ ...p, subject: start.subject, body: start.body, status: start.status }))
+        done.forEach((x) => setProposalState(pid, msgId, x.id, 'pending'))
+      },
       apply,
+      skipped ? `Accepted ${done.length}; ${skipped} no longer matched the email, so they’re still pending` : undefined,
     )
   }
 
@@ -1054,6 +1068,11 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
   }
 
   const replying = !!selected && !!activeChat(selected)?.messages.some((m) => m.pending)
+  // Stops the reply being written in the chat that's showing.
+  const stopReply = () => {
+    const thread = selected && activeChat(selected)
+    if (thread) stopJob(chatJobs.current, thread.id)
+  }
 
   const goToNextReview = () => {
     const next = nextReviewId(selectedId)
@@ -1077,16 +1096,23 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
         setPalette((v) => !v)
         return
       }
-      // ⌘O: switch campaign or folder, from anywhere in the email view.
+      // ⌘O: switch campaign or folder, from anywhere in the email view. The
+      // switcher hangs off the sidebar, so bring that back first.
       if (mod && e.key.toLowerCase() === 'o' && view !== 'settings') {
         e.preventDefault()
+        if (!switcherOpen) setLeftOpen(true)
         setSwitcherOpen((v) => !v)
         return
+      }
+      // ⌘N in the chat starts a new chat, even when the chat is a sheet over the email.
+      if (mod && e.key.toLowerCase() === 'n' && !e.shiftKey && el.closest?.('#side-panel') && selected && hasEmail(selected)) {
+        e.preventDefault()
+        return newChat()
       }
       // Dialogs and sheets handle their own Escape; don't act behind them.
       if (overlayOpen) return
       // Esc stops a reply that's being written, before anything else it does.
-      if (e.key === 'Escape' && replying && selected && view === 'email') return stopJob(chatJobs.current, selected.id)
+      if (e.key === 'Escape' && replying && view === 'email') return stopReply()
       if (e.key === 'Escape' && typing) return el.blur()
 
       if (mod && e.key.toLowerCase() === 'z') {
@@ -1133,7 +1159,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
         if ((key === '\\' || key === '|') && e.shiftKey) return run(() => setRightOpen((v) => !v))
         if (key === ']') return run(() => step(1))
         if (key === '[') return run(() => step(-1))
-        if (key === 'd' && !e.shiftKey) return run(() => setShowDiff((v) => !v))
+        if (key === 'd' && !e.shiftKey) return run(() => selected?.originalBody && setShowDiff((v) => !v))
         if (key === 'r' && !e.shiftKey) return run(regenerate)
       }
       if (typing || mod || e.altKey) return
@@ -1337,7 +1363,9 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     ...(undoTop ? [{ id: 'undo', group: 'Actions' as const, label: `Undo: ${undoTop.label}`, icon: <Undo2 />, shortcut: '⌘Z', run: appUndo }] : []),
     ...(redoTop ? [{ id: 'redo', group: 'Actions' as const, label: `Redo: ${redoTop.label}`, icon: <Redo2 />, shortcut: '⌘⇧Z', run: appRedo }] : []),
     { id: 'save', group: 'Actions', label: 'Save to drafts', icon: <Inbox />, shortcut: '⌘↵', run: save },
-    { id: 'diff', group: 'Actions', label: 'Compare with the AI draft', icon: <GitCompare />, shortcut: '⌘D', run: () => setShowDiff((v) => !v) },
+    ...(selected?.originalBody
+      ? [{ id: 'diff', group: 'Actions' as const, label: 'Compare with the AI draft', icon: <GitCompare />, shortcut: '⌘D', run: () => setShowDiff((v) => !v) }]
+      : []),
     { id: 'regen', group: 'Actions', label: 'Regenerate draft', icon: <RefreshCw />, shortcut: '⌘R', run: regenerate },
     { id: 'chat', group: 'Actions', label: 'Chat with the AI', icon: <MessageSquare />, shortcut: '⌘/', run: openChat },
     { id: 'brief', group: 'Actions', label: 'Show brief', icon: <FileText />, shortcut: '⌘⇧B', run: () => togglePanel('brief') },
@@ -1361,7 +1389,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     { id: 'help', group: 'Actions', label: 'Keyboard shortcuts', icon: <Keyboard />, shortcut: '?', run: () => setHelp(true) },
     { id: 'settings', group: 'Actions', label: 'Settings', icon: <Settings />, shortcut: '⌘,', run: () => openSettings() },
     { id: 'new-chat', group: 'Actions', label: 'New chat', icon: <MessageSquarePlus />, run: newChat },
-    ...(replying && selected ? [{ id: 'stop', group: 'Actions' as const, label: 'Stop the reply', icon: <Square />, run: () => stopJob(chatJobs.current, selected.id) }] : []),
+    ...(replying && selected ? [{ id: 'stop', group: 'Actions' as const, label: 'Stop the reply', icon: <Square />, run: stopReply }] : []),
     ...(selected && activeChat(selected)
       ? [
           {
@@ -1465,8 +1493,9 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     const apply = () => setProspects((ps) => [...ps.filter((p) => !ids.includes(p.id)), ...added])
     apply()
     record(`Added ${added.length} to ${campaign.name}`, undefined, () => setProspects((ps) => ps.filter((p) => !ids.includes(p.id))), apply)
-    // Show the first one researching.
+    // Show the first one researching. New ones are queued, so only All lists them.
     select(added[0].id)
+    setFilter('all')
   }
 
   // A suggestion as Claude will see it in the transcript of earlier turns.
@@ -1520,7 +1549,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
 
     const jobId = crypto.randomUUID()
     jobs.current.set(jobId, (e) => setReply((m) => (e.kind === 'delta' ? { ...m, text: m.text + e.text } : { ...m, step: e.text })))
-    chatJobs.current.set(pid, jobId)
+    chatJobs.current.set(chatId, jobId)
     const res = await window.api.claude.chat({
       jobId,
       ...claudeContext(p),
@@ -1533,7 +1562,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
       quote,
     })
     jobs.current.delete(jobId)
-    chatJobs.current.delete(pid)
+    chatJobs.current.delete(chatId)
     if (!res.ok) return setReply((m) => ({ ...m, pending: false, step: undefined, error: true, text: res.error }))
     setReply((m) => ({
       ...m,
@@ -1606,7 +1635,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
       onProposalsAll={resolveAllProposals}
       onRevertProposal={revertProposal}
       onSend={sendChat}
-      onStop={() => stopJob(chatJobs.current, selected.id)}
+      onStop={stopReply}
       quote={chatQuote?.pid === selected.id ? chatQuote.text : null}
       onClearQuote={() => setChatQuote(null)}
       onNewChat={newChat}
@@ -1825,8 +1854,18 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
         )}
 
         {!rightDocks && (
-          <Sheet open={rightOpen && !!selected && view === 'email'} onOpenChange={setRightOpen}>
-            <SheetContent side="right" showCloseButton={false} className="w-full gap-0 p-0 sm:max-w-md">
+          <Sheet open={sheetOpen} onOpenChange={setRightOpen}>
+            <SheetContent
+              side="right"
+              showCloseButton={false}
+              className="w-full gap-0 p-0 sm:max-w-md"
+              // Esc stops a reply that's being written before it closes the sheet.
+              onEscapeKeyDown={(e) => {
+                if (!replying) return
+                e.preventDefault()
+                stopReply()
+              }}
+            >
               <SheetHeader className="sr-only">
                 <SheetTitle>Brief & chat</SheetTitle>
                 <SheetDescription>Research brief and chat with the AI for this email</SheetDescription>
