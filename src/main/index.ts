@@ -77,12 +77,24 @@ app.whenReady().then(() => {
   // and sign-ins stay out of the renderer. Progress streams back to the window.
   const config = () => getAiConfig()
   const emitTo = (sender: Electron.WebContents) => (p: ClaudeProgress) => !sender.isDestroyed() && sender.send('claude:progress', p)
+  // Running requests the renderer can stop, by jobId.
+  const running = new Map<string, AbortController>()
+  const stoppable = async <T>(jobId: string, fn: (abort: AbortController) => Promise<T>) => {
+    const abort = new AbortController()
+    running.set(jobId, abort)
+    try {
+      return await fn(abort)
+    } finally {
+      running.delete(jobId)
+    }
+  }
   ipcMain.handle('claude:test', async () => ai.test(await config()))
-  ipcMain.handle('claude:research', async (e, req) => ai.researchAndDraft(await config(), req, emitTo(e.sender)))
+  ipcMain.handle('claude:research', async (e, req) => stoppable(req.jobId, async (abort) => ai.researchAndDraft(await config(), req, emitTo(e.sender), abort)))
   ipcMain.handle('claude:draft', async (_e, req) => ai.draft(await config(), req))
-  ipcMain.handle('claude:chat', async (e, req) => ai.chat(await config(), req, emitTo(e.sender)))
+  ipcMain.handle('claude:chat', async (e, req) => stoppable(req.jobId, async (abort) => ai.chat(await config(), req, emitTo(e.sender), abort)))
   ipcMain.handle('claude:learnVoice', async (_e, req) => ai.learnVoice(await config(), req))
-  ipcMain.handle('claude:lookupEvent', async (e, req) => ai.lookupEvent(await config(), req, emitTo(e.sender)))
+  ipcMain.handle('claude:lookupEvent', async (e, req) => stoppable(req.jobId, async (abort) => ai.lookupEvent(await config(), req, emitTo(e.sender), abort)))
+  ipcMain.handle('claude:cancel', (_e, jobId: string) => running.get(jobId)?.abort())
   ipcMain.handle('claude:applyEventAnswers', async (_e, req) => ai.applyEventAnswers(await config(), req))
   ipcMain.handle('claude:writingRules', async (_e, req) => ai.writingRules(await config(), req))
   ipcMain.handle('claude:parseOrganisations', async (_e, text: string) => ai.parseOrganisations(await config(), text))

@@ -1,6 +1,6 @@
 // Smoke test for src/main/claude.ts against the real Agent SDK. With no
 // ANTHROPIC_API_KEY it uses this machine's Claude Code sign-in.
-//   npx tsx scripts/test-claude.ts [test|research|chat|voice|rules|tools|parse|guided|comment|answers|event <name>]
+//   npx tsx scripts/test-claude.ts [test|research|brief|chat|stop|voice|rules|tools|parse|guided|comment|answers|event <name>]
 import assert from 'node:assert/strict'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -20,13 +20,14 @@ import {
 } from '../src/main/claude'
 
 configureClaude({ workspace: mkdtempSync(join(tmpdir(), 'inroad-')), clientApp: 'inroad/test' })
-const key = process.env.INROAD_TEST_KEY // deliberately not ANTHROPIC_API_KEY
+// INROAD_TEST_KEY, deliberately not ANTHROPIC_API_KEY.
+const cfg = { apiKey: process.env.INROAD_TEST_KEY, model: 'opus', utilityModel: 'haiku' }
 const which = process.argv[2] ?? 'test'
 const voice = { name: 'Jordan', notes: ['Short paragraphs, under ~170 words.', 'Signs off "Cheers," then first name.'], examples: [] }
 const log = (p: { kind: string; text: string }) => (p.kind === 'step' ? console.log('  ·', p.text) : process.stdout.write(p.text))
 
 if (which === 'test') {
-  const r = await testClaude(key)
+  const r = await testClaude(cfg)
   console.log(r)
   assert.ok(r.ok)
 }
@@ -34,7 +35,7 @@ if (which === 'test') {
 if (which === 'research') {
   const t = Date.now()
   const r = await researchAndDraft(
-    key,
+    cfg,
     {
       jobId: 'j1',
       company: 'Cloudflare',
@@ -50,22 +51,57 @@ if (which === 'research') {
   console.log(`\n✓ research + draft in ${Math.round((Date.now() - t) / 1000)}s`)
   console.log(
     '  brief sections:',
-    r.value.draft.brief.sections.map((s) => s.title),
+    r.value.brief.sections.map((s) => s.title),
   )
   console.log(
     '  recipients:',
-    r.value.draft.brief.recipients.map((x) => `${x.name} <${x.email || 'none'}> ${x.confidence}`),
+    r.value.brief.recipients.map((x) => `${x.name} <${x.email || 'none'}> ${x.confidence}`),
   )
-  console.log('  sources:', r.value.draft.brief.sources.length, '| research notes chars:', r.value.research.length)
+  console.log('  sources:', r.value.brief.sources.length, '| research notes chars:', r.value.research.length)
+  assert.ok(r.value.draft, 'expected a draft')
   console.log('  to:', r.value.draft.to, '| subject:', r.value.draft.subject)
   console.log('\n' + r.value.draft.body)
+}
+
+if (which === 'brief') {
+  const r = await researchAndDraft(
+    cfg,
+    { jobId: 'j2', company: 'Canva', website: 'canva.com', campaignNotes: 'Looking for sponsors for a student hackathon in Sydney.', voice, senderName: 'Jordan', draft: false },
+    log,
+  )
+  if (!r.ok) throw new Error(r.error)
+  console.log('\n✓ research only:', r.value.brief.summary)
+  assert.equal(r.value.draft, undefined, 'research-only returns no draft')
+}
+
+if (which === 'stop') {
+  const abort = new AbortController()
+  setTimeout(() => abort.abort(), 4000)
+  const r = await chat(
+    cfg,
+    {
+      jobId: 'c3',
+      company: 'Lumen Labs',
+      campaignNotes: 'Asking for sponsorship.',
+      voice,
+      subject: 'Hack the Harbour',
+      body: 'Hi Priya,\n\nWould you be open to sponsoring our hackathon?\n\nCheers,\nJordan',
+      history: [],
+      message: 'Write me a long explanation of every way this email could be improved.',
+    },
+    log,
+    abort,
+  )
+  if (!r.ok) throw new Error(r.error)
+  console.log('\n✓ stopped:', r.value.stopped, '| text so far:', r.value.text.length, 'chars')
+  assert.ok(r.value.stopped)
 }
 
 if (which === 'chat') {
   const body =
     "Hi Priya,\n\nI'm Jordan from Hack the Harbour, a 48-hour student hackathon in Sydney.\n\nWould you be open to sponsoring our event?\n\nCheers,\nJordan"
   const r = await chat(
-    key,
+    cfg,
     {
       jobId: 'c1',
       company: 'Lumen Labs',
@@ -86,7 +122,7 @@ if (which === 'chat') {
 }
 
 if (which === 'voice') {
-  const r = await learnVoice(key, {
+  const r = await learnVoice(cfg, {
     voiceName: 'Jordan',
     notes: voice.notes,
     draft:
@@ -109,13 +145,17 @@ if (which === 'tools') {
     'add-comments',
     'ha_call_service',
     'search_and_delete',
+    'search_and_replace',
+    'sql_query',
+    'find_and_merge',
+    'execute_query',
   ])
     assert.ok(!isReadOnlyTool(t), `${t} should be denied`)
   console.log('✓ connector tool filter allows reads and blocks writes')
 }
 
 if (which === 'rules') {
-  const r = await writingRules(key, {
+  const r = await writingRules(cfg, {
     emails: [
       "Hey Sam,\n\nQuick one — are you still keen to judge at HackCBR? We're locking in the panel this week.\n\nNo stress if not, just let me know by Friday.\n\nCheers,\nIngo",
       "Hi all,\n\nVenue's confirmed for the 14th. Doors 6pm, we'll have pizza.\n\nBring a laptop and a charger. That's it.\n\nCheers,\nIngo",
@@ -128,7 +168,7 @@ if (which === 'rules') {
 
 if (which === 'event') {
   const t = Date.now()
-  const r = await lookupEvent(key, { jobId: 'e1', name: process.argv[3] ?? 'HackCBR' }, log)
+  const r = await lookupEvent(cfg, { jobId: 'e1', name: process.argv[3] ?? 'HackCBR' }, log)
   if (!r.ok) throw new Error(r.error)
   console.log(`\n✓ event lookup in ${Math.round((Date.now() - t) / 1000)}s`)
   console.log(r.value.details)
@@ -138,7 +178,7 @@ if (which === 'event') {
 if (which === 'parse') {
   const t = Date.now()
   const r = await parseOrganisations(
-    key,
+    cfg,
     'Canva and Atlassian, both formal. PCBWay — they sponsored Campfire so mention that and ask for ~40 badges. Also JLCPCB (jlcpcb.com) and maybe Seeed Studio, write to their education team',
   )
   if (!r.ok) throw new Error(r.error)
@@ -147,7 +187,7 @@ if (which === 'parse') {
 }
 
 if (which === 'guided') {
-  const r = await draft(key, {
+  const r = await draft(cfg, {
     company: 'PCBWay',
     campaignNotes: 'Haven Canberra, a free game jam for teens (13–18) in Canberra, 14–15 November, ~30 attendees. Asking for sponsorship.',
     research: 'PCBWay is a PCB manufacturer in Shenzhen with a sponsorship programme for maker and student events (pcbway.com/sponsor.html).',
@@ -175,7 +215,7 @@ if (which === 'comment') {
   const body =
     "Hi Priya,\n\nI'm Jordan from Hack the Harbour, a 48-hour student hackathon in Sydney with around 400 hackers.\n\nLumen's vision API launched in March and would be a great fit.\n\nKeen to chat?\n\nCheers,\nJordan"
   const r = await chat(
-    key,
+    cfg,
     {
       jobId: 'c2',
       company: 'Lumen Labs',
@@ -197,7 +237,7 @@ if (which === 'comment') {
 if (which === 'answers') {
   const details =
     "What it is: Haven Canberra, a free two-day game jam for teens.\nDates: Saturday 14 and Sunday 15 November 2026\nPlace: Canberra, ACT\nMy own note: we're keen on local studios."
-  const r = await applyEventAnswers(key, {
+  const r = await applyEventAnswers(cfg, {
     name: 'Haven Canberra',
     details,
     answers: [

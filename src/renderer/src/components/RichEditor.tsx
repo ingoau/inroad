@@ -4,12 +4,16 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { cn } from '@/lib/utils'
-import { Bold, Check, Copy, ExternalLink, Italic, Link2, List, ListOrdered, Pencil, RemoveFormatting, Strikethrough, TextQuote, Unlink } from 'lucide-react'
+import { Placeholder } from '@tiptap/extensions'
+import { exitSuggestion } from '@tiptap/suggestion'
+import { Bold, Check, Copy, ExternalLink, Italic, Pencil, Strikethrough, Unlink } from 'lucide-react'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { emailExtensions, parseMarkdown } from '../markdown'
+import { emailExtensions, parseMarkdown, plainText, serializeMarkdown } from '../markdown'
 import { currentEditor, historyDepth, undoBridge } from '../undo'
 import { CommentHighlights, commentsKey, type Highlight } from './commentHighlights'
 import { Hint, Keys } from './hint'
+import { SnippetMenu, type SnippetItem } from './snippetMenu'
+import { SuggestionHighlights, suggestionsKey, type InlineSuggestion } from './suggestionHighlights'
 
 interface Props {
   // Markdown (see markdown.ts).
@@ -19,7 +23,39 @@ interface Props {
   highlights?: Highlight[]
   activeHighlight?: string | null
   onHighlightClick?: (id: string) => void
+  // The AI's pending suggestions, shown in the text as tracked changes.
+  suggestions?: InlineSuggestion[]
+  onSuggestion?: (id: string, accept: boolean) => void
+  // Highlight text and ask the AI about it.
+  onAsk?: (text: string) => void
+  // Snippets this email can use, inserted by typing "/".
+  snippets?: SnippetItem[]
+  // Where a selection can be saved as a snippet: value and label, most specific last.
+  snippetScopes?: { value: string; label: string }[]
+  onSaveSnippet?: (name: string, markdown: string, scope: string) => void
 }
+
+// The "/" snippet menu while it's open.
+interface SlashMenu {
+  items: SnippetItem[]
+  index: number
+  rect: DOMRect | null
+  command: (item: SnippetItem) => void
+}
+
+// Saving the selection as a snippet.
+interface SnippetDraft {
+  name: string
+  markdown: string
+  scope: string
+}
+
+// Formats in the "/" menu, after any snippets. Each also has a markdown shortcut.
+const FORMATS: SnippetItem[] = [
+  { id: 'fmt-bullets', name: 'Bulleted list', text: '', scope: '- space', run: (e) => e.chain().focus().toggleBulletList().run() },
+  { id: 'fmt-numbers', name: 'Numbered list', text: '', scope: '1. space', run: (e) => e.chain().focus().toggleOrderedList().run() },
+  { id: 'fmt-quote', name: 'Quote', text: '', scope: '> space', run: (e) => e.chain().focus().toggleBlockquote().run() },
+]
 
 // What the link popover is editing: the range it applies to, plus the text and
 // URL fields. `null` means the popover is just showing an existing link.
@@ -33,18 +69,59 @@ interface LinkDraft {
 
 // Deliberately small formatting set: no headings, sizes, fonts or colours, so
 // emails stay looking like emails.
-export function RichEditor({ value, onChange, highlights = [], activeHighlight = null, onHighlightClick }: Props) {
+export function RichEditor({
+  value,
+  onChange,
+  highlights = [],
+  activeHighlight = null,
+  onHighlightClick,
+  suggestions = [],
+  onSuggestion,
+  onAsk,
+  snippets = [],
+  snippetScopes = [],
+  onSaveSnippet,
+}: Props) {
   const onChangeRef = useRef(onChange)
   onChangeRef.current = onChange
   const onHighlightClickRef = useRef(onHighlightClick)
   onHighlightClickRef.current = onHighlightClick
+  const onSuggestionRef = useRef(onSuggestion)
+  onSuggestionRef.current = onSuggestion
+  const snippetsRef = useRef(snippets)
+  snippetsRef.current = snippets
   const [linkDraft, setLinkDraft] = useState<LinkDraft | null>(null)
   const linkDraftRef = useRef(linkDraft)
   linkDraftRef.current = linkDraft
   const startLinkRef = useRef<() => void>(() => {})
+  const [slash, setSlash] = useState<SlashMenu | null>(null)
+  const slashRef = useRef(slash)
+  slashRef.current = slash
+  const slashKeyRef = useRef<(e: KeyboardEvent) => boolean>(() => false)
+  const [snippetDraft, setSnippetDraft] = useState<SnippetDraft | null>(null)
+  const snippetDraftRef = useRef(snippetDraft)
+  snippetDraftRef.current = snippetDraft
 
   const editor = useEditor({
-    extensions: [...emailExtensions({ autolink: true, linkOnPaste: true, defaultProtocol: 'https' }), CommentHighlights],
+    extensions: [
+      ...emailExtensions({ autolink: true, linkOnPaste: true, defaultProtocol: 'https' }),
+      CommentHighlights,
+      Placeholder.configure({ placeholder: 'Write, or type / for snippets and lists' }),
+      SuggestionHighlights.configure({ onResolve: (id, accept) => onSuggestionRef.current?.(id, accept) }),
+      SnippetMenu.configure({
+        items: (query) => {
+          const q = query.toLowerCase()
+          const all = snippetsRef.current
+          const snippetHits = [...all.filter((s) => s.name.toLowerCase().includes(q)), ...all.filter((s) => !s.name.toLowerCase().includes(q) && s.text.toLowerCase().includes(q))]
+          return [...snippetHits.slice(0, 6), ...FORMATS.filter((f) => f.name.toLowerCase().includes(q))]
+        },
+        render: () => {
+          const show = (p: { items: SnippetItem[]; command: (item: SnippetItem) => void; clientRect?: (() => DOMRect | null) | null }) =>
+            setSlash({ items: p.items, index: 0, rect: p.clientRect?.() ?? null, command: p.command })
+          return { onStart: show, onUpdate: show, onExit: () => setSlash(null), onKeyDown: ({ event }) => slashKeyRef.current(event) }
+        },
+      }),
+    ],
     content: value,
     contentType: 'markdown',
     editorProps: {
@@ -95,6 +172,37 @@ export function RichEditor({ value, onChange, highlights = [], activeHighlight =
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editor, highlightKey])
 
+  // Same for the AI's pending suggestions.
+  const suggestionKey = JSON.stringify(suggestions)
+  useEffect(() => {
+    if (!editor) return
+    editor.view.dispatch(editor.state.tr.setMeta(suggestionsKey, suggestions).setMeta('addToHistory', false).setMeta('preventUpdate', true))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editor, suggestionKey])
+
+  // Arrow keys, ↵ / Tab and Esc while the snippet menu is open.
+  slashKeyRef.current = (e) => {
+    const menu = slashRef.current
+    if (!menu || !editor) return false
+    const n = menu.items.length
+    if (e.key === 'Escape') {
+      e.stopPropagation()
+      exitSuggestion(editor.view)
+      setSlash(null)
+      return true
+    }
+    if (!n) return false
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      setSlash({ ...menu, index: (menu.index + (e.key === 'ArrowDown' ? 1 : n - 1)) % n })
+      return true
+    }
+    if ((e.key === 'Enter' && !e.metaKey && !e.ctrlKey) || e.key === 'Tab') {
+      menu.command(menu.items[menu.index])
+      return true
+    }
+    return false
+  }
+
   // Pick up changes made outside the editor: accepted suggestions, restored versions.
   useEffect(() => {
     if (editor && editor.getMarkdown() !== value) patchContent(editor, value)
@@ -136,6 +244,25 @@ export function RichEditor({ value, onChange, highlights = [], activeHighlight =
     editor.commands.focus()
   }
 
+  const selectedText = () => {
+    const { from, to } = editor.state.selection
+    return editor.state.doc.textBetween(from, to, '\n')
+  }
+
+  const startSnippet = () => {
+    const markdown = serializeMarkdown({ type: 'doc', content: editor.state.selection.content().content.toJSON() }).trim()
+    if (!markdown) return
+    const name = selectedText().split(/\s+/).slice(0, 4).join(' ')
+    setSnippetDraft({ name, markdown, scope: snippetScopes.at(-1)?.value ?? 'global' })
+  }
+
+  const saveSnippet = (draft: SnippetDraft) => {
+    if (!draft.name.trim()) return
+    onSaveSnippet?.(draft.name.trim(), draft.markdown, draft.scope)
+    setSnippetDraft(null)
+    editor.commands.focus()
+  }
+
   const applyLink = (draft: LinkDraft) => {
     const href = normaliseUrl(draft.url)
     const text = draft.text.trim() || draft.url.trim()
@@ -154,35 +281,81 @@ export function RichEditor({ value, onChange, highlights = [], activeHighlight =
 
   return (
     <div>
-      <div className="sticky top-0 z-10 -mx-1 flex h-10 items-center gap-0.5 border-b bg-background">
-        <ToolBtn label="Bold" keys="⌘ B" active={state.bold} onClick={() => editor.chain().focus().toggleBold().run()}>
-          <Bold />
-        </ToolBtn>
-        <ToolBtn label="Italic" keys="⌘ I" active={state.italic} onClick={() => editor.chain().focus().toggleItalic().run()}>
-          <Italic />
-        </ToolBtn>
-        <ToolBtn label="Strikethrough" keys="⌘ ⇧ S" active={state.strike} onClick={() => editor.chain().focus().toggleStrike().run()}>
-          <Strikethrough />
-        </ToolBtn>
-        <Separator orientation="vertical" className="mx-1 data-[orientation=vertical]:h-4" />
-        <ToolBtn label="Link (select text first)" keys="⌘ K" active={state.link} onClick={() => startLinkRef.current()}>
-          <Link2 />
-        </ToolBtn>
-        <Separator orientation="vertical" className="mx-1 data-[orientation=vertical]:h-4" />
-        <ToolBtn label="Bulleted list" keys="⌘ ⇧ 8" active={state.bulletList} onClick={() => editor.chain().focus().toggleBulletList().run()}>
-          <List />
-        </ToolBtn>
-        <ToolBtn label="Numbered list" keys="⌘ ⇧ 7" active={state.orderedList} onClick={() => editor.chain().focus().toggleOrderedList().run()}>
-          <ListOrdered />
-        </ToolBtn>
-        <ToolBtn label="Quote" active={state.blockquote} onClick={() => editor.chain().focus().toggleBlockquote().run()}>
-          <TextQuote />
-        </ToolBtn>
-        <Separator orientation="vertical" className="mx-1 data-[orientation=vertical]:h-4" />
-        <ToolBtn label="Clear formatting" onClick={() => editor.chain().focus().unsetAllMarks().clearNodes().run()}>
-          <RemoveFormatting />
-        </ToolBtn>
-      </div>
+      {/* With text selected: format it, ask the AI about it, or keep it as a snippet. No toolbar otherwise. */}
+      <BubbleMenu
+        editor={editor}
+        pluginKey="selectionMenu"
+        shouldShow={({ editor: e, from, to }) =>
+          !!snippetDraftRef.current ||
+          (from !== to && document.activeElement?.id === 'email-body' && !e.isActive('link') && !linkDraftRef.current)
+        }
+        options={{ placement: 'top-start', offset: 8 }}
+        className="z-30"
+      >
+        {snippetDraft ? (
+          <SnippetForm draft={snippetDraft} scopes={snippetScopes} onChange={setSnippetDraft} onSave={saveSnippet} onCancel={() => setSnippetDraft(null)} />
+        ) : (
+          <div className={cn(popover, 'flex items-center gap-0.5 p-1')}>
+            <ToolBtn label="Bold" keys="⌘ B" active={state.bold} onClick={() => editor.chain().focus().toggleBold().run()}>
+              <Bold />
+            </ToolBtn>
+            <ToolBtn label="Italic" keys="⌘ I" active={state.italic} onClick={() => editor.chain().focus().toggleItalic().run()}>
+              <Italic />
+            </ToolBtn>
+            <ToolBtn label="Strikethrough" keys="⌘ ⇧ S" active={state.strike} onClick={() => editor.chain().focus().toggleStrike().run()}>
+              <Strikethrough />
+            </ToolBtn>
+            <Button variant="ghost" size="sm" className="text-muted-foreground" onMouseDown={(e) => e.preventDefault()} onClick={() => startLinkRef.current()}>
+              Link
+            </Button>
+            {(onAsk || onSaveSnippet) && <Separator orientation="vertical" className="mx-0.5 data-[orientation=vertical]:h-4" />}
+            {onAsk && (
+              <Button variant="ghost" size="sm" className="text-mark-text hover:text-mark-text" onMouseDown={(e) => e.preventDefault()} onClick={() => onAsk(selectedText())}>
+                Ask AI <span className="text-muted-foreground">⌘/</span>
+              </Button>
+            )}
+            {onSaveSnippet && (
+              <Button variant="ghost" size="sm" onMouseDown={(e) => e.preventDefault()} onClick={startSnippet}>
+                Save as snippet
+              </Button>
+            )}
+          </div>
+        )}
+      </BubbleMenu>
+
+      {slash && slash.rect && (
+        <div
+          className={cn(popover, 'fixed z-40 w-72 p-1')}
+          style={{ top: slash.rect.bottom + 6, left: Math.min(slash.rect.left, window.innerWidth - 300) }}
+          onMouseDown={(e) => e.preventDefault()}
+        >
+          {slash.items.length ? (
+            slash.items.map((s, i) => (
+              <div key={s.id}>
+                {(i === 0 || !!s.run !== !!slash.items[i - 1].run) && (
+                  <div className="px-2 pt-1.5 pb-1 text-xs text-muted-foreground">{s.run ? 'Format' : 'Snippets'}</div>
+                )}
+                <button
+                  className={cn('flex w-full flex-col items-start rounded-md px-2 py-1.5 text-left text-sm', i === slash.index && 'bg-accent text-accent-foreground')}
+                  onMouseEnter={() => setSlash({ ...slash, index: i })}
+                  onClick={() => slash.command(s)}
+                >
+                  <span className="flex w-full items-center gap-2">
+                    <span className="truncate">{s.name}</span>
+                    <span className="ml-auto shrink-0 text-xs text-muted-foreground">{s.scope}</span>
+                  </span>
+                  {!s.run && <span className="line-clamp-1 text-xs text-muted-foreground">{plainText(s.text)}</span>}
+                </button>
+              </div>
+            ))
+          ) : (
+            <p className="px-2 py-1.5 text-sm text-muted-foreground">Nothing matches</p>
+          )}
+          <p className="flex items-center gap-1 border-t px-2 pt-1.5 pb-1 text-xs text-muted-foreground">
+            <Keys keys="↑↓" /> choose <Keys keys="↵" className="ml-1" /> insert <Keys keys="esc" className="ml-1" /> close
+          </p>
+        </div>
+      )}
 
       <BubbleMenu
         editor={editor}
@@ -245,6 +418,57 @@ function LinkPreview({ href, onEdit, onRemove }: { href: string; onEdit: () => v
       <ToolBtn label="Remove link" onClick={onRemove}>
         <Unlink />
       </ToolBtn>
+    </div>
+  )
+}
+
+function SnippetForm({
+  draft,
+  scopes,
+  onChange,
+  onSave,
+  onCancel,
+}: {
+  draft: SnippetDraft
+  scopes: { value: string; label: string }[]
+  onChange: (d: SnippetDraft) => void
+  onSave: (d: SnippetDraft) => void
+  onCancel: () => void
+}) {
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      onSave(draft)
+    } else if (e.key === 'Escape') {
+      e.preventDefault()
+      e.stopPropagation()
+      onCancel()
+    }
+  }
+  return (
+    <div className={cn(popover, 'w-[340px] space-y-3 p-3')} onKeyDown={onKeyDown}>
+      <label className="block space-y-1">
+        <span className="text-xs font-medium text-muted-foreground">Snippet name</span>
+        <Input autoFocus value={draft.name} onChange={(e) => onChange({ ...draft, name: e.target.value })} placeholder="e.g. Sponsor tiers" />
+      </label>
+      <div className="space-y-1">
+        <span className="text-xs font-medium text-muted-foreground">Use it in</span>
+        <div className="flex flex-wrap gap-1">
+          {scopes.map((s) => (
+            <Button key={s.value} size="xs" variant={draft.scope === s.value ? 'secondary' : 'ghost'} onClick={() => onChange({ ...draft, scope: s.value })}>
+              {s.label}
+            </Button>
+          ))}
+        </div>
+      </div>
+      <div className="flex items-center justify-between">
+        <span className="flex items-center gap-1 text-xs text-muted-foreground">
+          <Keys keys="↵" /> save <Keys keys="esc" className="ml-1" /> cancel
+        </span>
+        <Button size="sm" disabled={!draft.name.trim()} onClick={() => onSave(draft)}>
+          Save snippet
+        </Button>
+      </div>
     </div>
   )
 }

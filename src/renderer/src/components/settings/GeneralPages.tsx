@@ -17,7 +17,6 @@ import { useMemo, useState, type ReactNode } from 'react'
 import type { MailSettings, PublicSettings } from '../../../../shared/api'
 import { emailHtml, emailStyleVars, type EmailStyle } from '../../markdown'
 import { globalShortcuts, NAV_SHORTCUTS } from '../CommandPalette'
-import { agentName, useAgentName } from '../../agent'
 import { Keys } from '../hint'
 import { SettingsBlock, SettingsRow, SettingsSection } from './layout'
 
@@ -120,7 +119,7 @@ export function MailboxForm({ settings, onSaved }: { settings: PublicSettings | 
     <div className="space-y-6">
       {settings && !settings.secureStorage && <InsecureStorageNotice />}
       <SettingsSection title="You">
-        <SettingsRow title="Name" description={`Shown as the sender, and how ${agentName(settings?.aiProvider)} signs off.`} htmlFor="fromName">
+        <SettingsRow title="Name" description="Shown as the sender, and how the AI signs off emails." htmlFor="fromName">
           <Input
             id="fromName"
             className="w-64"
@@ -298,6 +297,33 @@ export function EmailStylePage({ style, onChange }: { style: EmailStyle; onChang
 
 // ---------------------------------------------------------------- Agent
 
+// Claude model aliases: each resolves to the newest model of that family. '' is Inroad's default.
+const CLAUDE_MODELS: [string, string][] = [
+  ['opus', 'Opus'],
+  ['sonnet', 'Sonnet'],
+  ['haiku', 'Haiku'],
+]
+
+function ModelSelect({ value, fallback, onChange }: { value: string; fallback: string; onChange: (v: string) => void }) {
+  const known = CLAUDE_MODELS.some(([v]) => v === value)
+  return (
+    <Select value={value || 'default'} onValueChange={(v) => onChange(v === 'default' ? '' : v)} disabled={!window.api}>
+      <SelectTrigger className="w-56">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="default">Default ({CLAUDE_MODELS.find(([v]) => v === fallback)?.[1]})</SelectItem>
+        {CLAUDE_MODELS.map(([v, label]) => (
+          <SelectItem key={v} value={v}>
+            {label}
+          </SelectItem>
+        ))}
+        {value && !known && <SelectItem value={value}>{value}</SelectItem>}
+      </SelectContent>
+    </Select>
+  )
+}
+
 export function ClaudePage({ settings, onSaved }: { settings: PublicSettings | null; onSaved: (s: PublicSettings) => void }) {
   const [apiKey, setApiKey] = useState('')
   const [busy, setBusy] = useState(false)
@@ -305,6 +331,7 @@ export function ClaudePage({ settings, onSaved }: { settings: PublicSettings | n
   const [status, setStatus] = useState<Status>(null)
   const [path, setPath] = useState(settings?.opencode.path ?? '')
   const [model, setModel] = useState(settings?.opencode.model ?? '')
+  const [utilityModel, setUtilityModel] = useState(settings?.opencode.utilityModel ?? '')
   const [agent, setAgent] = useState(settings?.opencode.agent ?? '')
   const desktop = !!window.api
   const provider = settings?.aiProvider ?? 'claude'
@@ -340,6 +367,12 @@ export function ClaudePage({ settings, onSaved }: { settings: PublicSettings | n
     }
   }
 
+  const setClaudeModel = async (patch: { claudeModel?: string; claudeUtilityModel?: string }) => {
+    if (!window.api) return
+    setStatus(null)
+    onSaved(await window.api.settings.set(patch))
+  }
+
   const setProvider = async (p: PublicSettings['aiProvider']) => {
     if (!window.api) return
     setStatus(null)
@@ -350,7 +383,7 @@ export function ClaudePage({ settings, onSaved }: { settings: PublicSettings | n
     if (!window.api) return
     setBusy(true)
     try {
-      onSaved(await window.api.settings.set({ opencodePath: path, opencodeModel: model, opencodeAgent: agent }))
+      onSaved(await window.api.settings.set({ opencodePath: path, opencodeModel: model, opencodeUtilityModel: utilityModel, opencodeAgent: agent }))
       setStatus(null)
     } finally {
       setBusy(false)
@@ -406,6 +439,14 @@ export function ClaudePage({ settings, onSaved }: { settings: PublicSettings | n
               }
             />
           </SettingsSection>
+          <SettingsSection title="Models">
+            <SettingsRow title="Main model" description="Researches organisations, writes drafts, chats and looks up your event.">
+              <ModelSelect value={settings?.claude.model ?? ''} fallback="opus" onChange={(claudeModel) => setClaudeModel({ claudeModel })} />
+            </SettingsRow>
+            <SettingsRow title="Quick tasks" description="Turns what you type into a list of organisations, and folds your answers into the event details.">
+              <ModelSelect value={settings?.claude.utilityModel ?? ''} fallback="haiku" onChange={(claudeUtilityModel) => setClaudeModel({ claudeUtilityModel })} />
+            </SettingsRow>
+          </SettingsSection>
           <SettingsSection title="API key (optional)">
             <SettingsRow
               title="Anthropic API key"
@@ -452,11 +493,24 @@ export function ClaudePage({ settings, onSaved }: { settings: PublicSettings | n
             <Input id="opencodePath" className="w-56" value={path} onChange={(e) => setPath(e.target.value)} placeholder="opencode" />
           </SettingsRow>
           <SettingsRow
-            title="Model"
-            description="In provider/model form, e.g. anthropic/claude-sonnet-4-5. Blank uses your opencode default."
+            title="Main model"
+            description="Researches organisations, writes drafts, chats and looks up your event. In provider/model form, e.g. anthropic/claude-sonnet-4-5. Blank uses your opencode default."
             htmlFor="opencodeModel"
           >
             <Input id="opencodeModel" className="w-56" value={model} onChange={(e) => setModel(e.target.value)} placeholder="(default)" />
+          </SettingsRow>
+          <SettingsRow
+            title="Quick tasks model"
+            description="Turns what you type into a list of organisations, and folds your answers into the event details. Blank uses the main model."
+            htmlFor="opencodeUtilityModel"
+          >
+            <Input
+              id="opencodeUtilityModel"
+              className="w-56"
+              value={utilityModel}
+              onChange={(e) => setUtilityModel(e.target.value)}
+              placeholder="(main model)"
+            />
           </SettingsRow>
           <SettingsRow
             title="Agent"
@@ -498,11 +552,10 @@ export function AppearancePage({ theme, onTheme }: { theme: 'dark' | 'light'; on
 // ---------------------------------------------------------------- Shortcuts
 
 export function ShortcutsPage() {
-  const agent = useAgentName()
   return (
     <>
       <Intro>Most of the time you’re typing, so everything important also has a ⌘ shortcut. Press ? anywhere to see these.</Intro>
-      <ShortcutSection title="Anywhere, even while typing" items={globalShortcuts(agent)} />
+      <ShortcutSection title="Anywhere, even while typing" items={globalShortcuts()} />
       <ShortcutSection title="When you’re not in a text box" items={NAV_SHORTCUTS} />
     </>
   )

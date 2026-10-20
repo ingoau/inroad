@@ -35,6 +35,12 @@ type Emit = (p: ClaudeProgress) => void
 
 type OpencodeConfig = AiConfig['opencode']
 
+// What a stopped request reports (see run).
+const STOPPED = 'Stopped.'
+
+// Quick processing jobs run on the utility model when one is set.
+const utility = (cfg: OpencodeConfig): OpencodeConfig => ({ ...cfg, model: cfg.utilityModel ?? cfg.model })
+
 // A project-local opencode config written into the agent workspace. Its "inroad"
 // agent is read-only and web-only: every tool is denied except web search and
 // page fetches, so it can't read the user's files or run shell commands. A step
@@ -84,8 +90,9 @@ interface Handlers {
 }
 
 // Spawns `opencode run` with the prompt on stdin and collects its output.
-// Events: step_start / text / tool_use / step_finish / error.
-async function run(cfg: OpencodeConfig, prompt: string, handlers: Handlers = {}): Promise<string> {
+// Events: step_start / text / tool_use / step_finish / error. Aborting `signal`
+// kills the process and rejects with STOPPED.
+async function run(cfg: OpencodeConfig, prompt: string, handlers: Handlers = {}, signal?: AbortSignal): Promise<string> {
   ensureProjectConfig(cfg.workspace)
   const args = ['run', '--format', 'json', '--dir', cfg.workspace]
   if (cfg.model) args.push('-m', cfg.model)
@@ -116,6 +123,10 @@ async function run(cfg: OpencodeConfig, prompt: string, handlers: Handlers = {})
   }
 
   const child = spawn(cfg.executable, args, { cwd: cfg.workspace, env: { ...process.env, PWD: cfg.workspace } })
+  const stop = () => child.kill()
+  // Stopped before the process even started: there's no abort event left to hear.
+  if (signal?.aborted) stop()
+  else signal?.addEventListener('abort', stop, { once: true })
   child.stdin.on('error', () => {})
   child.stdin.end(prompt)
 
@@ -133,11 +144,14 @@ async function run(cfg: OpencodeConfig, prompt: string, handlers: Handlers = {})
   const code = await new Promise<number>((resolve, reject) => {
     child.on('error', reject)
     child.on('close', (c) => resolve(c ?? 0))
-  }).catch((err: NodeJS.ErrnoException) => {
-    if (err.code === 'ENOENT') throw new Error(`Couldn’t find opencode at “${cfg.executable}”. Install opencode or set its path in Settings.`)
-    throw new Error(err.message)
   })
+    .catch((err: NodeJS.ErrnoException) => {
+      if (err.code === 'ENOENT') throw new Error(`Couldn’t find opencode at “${cfg.executable}”. Install opencode or set its path in Settings.`)
+      throw new Error(err.message)
+    })
+    .finally(() => signal?.removeEventListener('abort', stop))
 
+  if (signal?.aborted) throw new Error(STOPPED)
   if (buffer.trim()) handle(buffer)
   if (failure) throw new Error(failure)
   if (code !== 0) throw new Error(stderr.trim() || `opencode exited with code ${code}.`)
@@ -287,19 +301,27 @@ function guidanceSections(req: EmailGuidance & { company: string }) {
 
 const GUIDANCE_RULE = `If there's an email format, follow its structure and include everything it asks for. If the user gave instructions for this organisation, follow them exactly; they override the campaign notes, the format and your own judgement where they conflict.`
 
-const ResearchDraftSchema = z.object({
-  research_notes: z.string().describe('Everything useful you found, each fact with its source URL. Kept so the email can be rewritten later without searching again.'),
+const ResearchOnlySchema = z.object({
+  research_notes: z.string().describe('Everything useful you found, each fact with its source URL. Kept so the email can be written later without searching again.'),
   brief: BriefSchema,
-  ...EmailFields,
 })
+
+const ResearchDraftSchema = ResearchOnlySchema.extend(EmailFields)
 
 const WRITING_RULES = `Write the email exactly as the user writes: follow their style notes, and treat the examples (Claude's draft vs. what they actually sent) as the strongest signal of their preferences. Use only facts from your research; never invent details, numbers, people or email addresses. Open with something specific to this organisation, make one clear ask drawn from the campaign notes, and keep it short enough to read on a phone. Address the best recipient by first name when you have one. ${GUIDANCE_RULE}`
 
+const RESEARCH_STEPS = `Research with web search and page fetches: what the organisation does; why they'd be a good fit for what the campaign asks for; recent, specific things that would open an email well; and the best people or inboxes to contact. A handful of searches and a few page reads is usually enough. Only give an email address if it's published or very strongly evidenced, and say how you know.`
+
 const RESEARCH_SYSTEM = `You research an organisation and write the user a personalised first-contact email to it. The user's campaign notes say what they're reaching out about and what to look for.
 
-Research with web search and page fetches: what the organisation does; why they'd be a good fit for what the campaign asks for; recent, specific things that would open the email well; and the best people or inboxes to contact. A handful of searches and a few page reads is usually enough. Only give an email address if it's published or very strongly evidenced, and say how you know.
+${RESEARCH_STEPS}
 
 ${WRITING_RULES}`
+
+// The user turned drafting off: research and the brief, but no email yet.
+const RESEARCH_ONLY_SYSTEM = `You research an organisation for the user, who may write to it later. The user's campaign notes say what they're reaching out about and what to look for. Don't write an email: turn what you find into research notes and a brief for the user to skim.
+
+${RESEARCH_STEPS}`
 
 // A one-line description of what a tool call is doing, for the progress log.
 function describeTool(tool: string, input: Record<string, unknown> | undefined): string | undefined {
@@ -321,28 +343,33 @@ function describeTool(tool: string, input: Record<string, unknown> | undefined):
 
 // ------------------------------------------------- research + first draft
 
-export async function researchAndDraft(cfg: OpencodeConfig, req: ResearchRequest, emit: Emit): Promise<Result<ResearchResult>> {
+export async function researchAndDraft(cfg: OpencodeConfig, req: ResearchRequest, emit: Emit, abort?: AbortController): Promise<Result<ResearchResult>> {
   return guard(async () => {
+    const withDraft = req.draft !== false
     emit({ jobId: req.jobId, kind: 'step', text: `Researching ${req.company}` })
     const prompt = [
-      RESEARCH_SYSTEM,
+      withDraft ? RESEARCH_SYSTEM : RESEARCH_ONLY_SYSTEM,
       `<campaign_notes>\n${req.campaignNotes || '(none)'}\n</campaign_notes>`,
       ...guidanceSections(req),
       voiceSection(req.voice),
       `<sender>${req.senderName || 'the user'}</sender>`,
       `Organisation: ${req.company}${req.website ? ` (website: ${req.website})` : ''}`,
     ].join('\n\n')
-    const text = await run(cfg, prompt + withJsonSchema(ResearchDraftSchema), {
-      onTool: (tool, input) => {
-        const step = describeTool(tool, input)
-        if (step) emit({ jobId: req.jobId, kind: 'step', text: step })
-      },
-    })
+    const onTool = (tool: string, input: Record<string, unknown> | undefined) => {
+      const step = describeTool(tool, input)
+      if (step) emit({ jobId: req.jobId, kind: 'step', text: step })
+    }
+    if (!withDraft) {
+      const out = parseJson(ResearchOnlySchema, await run(cfg, prompt + withJsonSchema(ResearchOnlySchema), { onTool }, abort?.signal))
+      return { research: out.research_notes, brief: out.brief }
+    }
+    const text = await run(cfg, prompt + withJsonSchema(ResearchDraftSchema), { onTool }, abort?.signal)
     emit({ jobId: req.jobId, kind: 'step', text: 'Writing draft' })
     const out = parseJson(ResearchDraftSchema, text)
     return {
       research: out.research_notes,
-      draft: { brief: out.brief, to: out.to, subject: out.subject, body: out.body, comments: anchored(out.body, out.comments) },
+      brief: out.brief,
+      draft: { to: out.to, subject: out.subject, body: out.body, comments: anchored(out.body, out.comments) },
     }
   })
 }
@@ -375,6 +402,8 @@ export async function draft(cfg: OpencodeConfig, req: DraftRequest): Promise<Res
 const CHAT_SYSTEM = `You help the user refine one outreach email. You can see the email, the research brief, the campaign notes, any email format and instructions for this organisation, and the user's voice. Keep the email within the format and instructions unless the user asks otherwise.
 
 The email body is markdown, exactly as stored: ${MARKDOWN} Links and formatting are part of the text you see and can change.
+
+The user may point at a passage they highlighted in the email; it's quoted with their message. Read it as "this part", and keep any edits to it unless they ask for more.
 
 To change the email, quote the exact text to replace (copied verbatim from the subject or body, long enough to be unique, within a single paragraph) and give the replacement. To delete something, quote it with a few surrounding words and leave those words in the replacement. Prefer a few focused edits over rewriting everything, and stay in the user's voice. When the user asks what you think, wants something checked, or asks why something is there, pin a comment to the phrase it's about rather than only describing it in your reply. Don't repeat comments the email already has. Only search the web if the user asks for something the brief doesn't cover. Keep your messages short.
 
@@ -419,7 +448,7 @@ function takeEdits(
   return { text: cleaned, proposals, comments }
 }
 
-export async function chat(cfg: OpencodeConfig, req: ChatRequest, emit: Emit): Promise<Result<ChatResult>> {
+export async function chat(cfg: OpencodeConfig, req: ChatRequest, emit: Emit, abort?: AbortController): Promise<Result<ChatResult>> {
   return guard(async () => {
     const context = [
       CHAT_SYSTEM,
@@ -438,13 +467,31 @@ export async function chat(cfg: OpencodeConfig, req: ChatRequest, emit: Emit): P
       ? `<conversation_so_far>\n${req.history.map((m) => `${m.role === 'user' ? 'User' : 'You'}: ${m.text}`).join('\n\n')}\n</conversation_so_far>\n\n`
       : ''
 
+    const message = req.quote?.trim() ? `<highlighted_passage>\n${req.quote.trim()}\n</highlighted_passage>\n\nUser: ${req.message}` : `User: ${req.message}`
+
     let streamed = ''
-    const text = await run(cfg, `${context}\n\n${transcript}User: ${req.message}`, {
-      onText: (chunk) => {
-        streamed += chunk
-        emit({ jobId: req.jobId, kind: 'delta', text: chunk })
-      },
-    })
+    let text: string
+    try {
+      text = await run(
+        cfg,
+        `${context}\n\n${transcript}${message}`,
+        {
+          onText: (chunk) => {
+            streamed += chunk
+            emit({ jobId: req.jobId, kind: 'delta', text: chunk })
+          },
+          onTool: (tool, input) => {
+            const step = describeTool(tool, input)
+            if (step) emit({ jobId: req.jobId, kind: 'step', text: step })
+          },
+        },
+        abort?.signal,
+      )
+    } catch (err) {
+      // Stopped by the user: keep what was written so far.
+      if (abort?.signal.aborted) return { ...takeEdits(streamed, req.subject, req.body), stopped: true }
+      throw err
+    }
     const full = text.trim() || streamed.trim()
     const { text: reply, proposals, comments } = takeEdits(full, req.subject, req.body)
     return { text: reply, proposals, comments }
@@ -492,7 +539,7 @@ const EventSchema = z.object({
     ),
 })
 
-export async function lookupEvent(cfg: OpencodeConfig, req: EventLookupRequest, emit: Emit): Promise<Result<EventLookupResult>> {
+export async function lookupEvent(cfg: OpencodeConfig, req: EventLookupRequest, emit: Emit, abort?: AbortController): Promise<Result<EventLookupResult>> {
   return guard(async () => {
     emit({ jobId: req.jobId, kind: 'step', text: `Looking for “${req.name}”` })
     const prompt = [
@@ -505,12 +552,17 @@ Only report what you found. If sources disagree on something that matters, don't
 Leave out: sources, citations and where you found anything; outreach already sent or drafted and sponsors already confirmed; other people working on the event and their contact details; internal logistics (insurance, budget, hire agreements, to-dos); notes about tools or access. Public links to the event's own site or social pages are fine.`,
       `Event: ${req.name}${req.hint ? `\nWhat the user added: ${req.hint}` : ''}`,
     ].join('\n\n')
-    const text = await run(cfg, prompt + withJsonSchema(EventSchema), {
-      onTool: (tool, input) => {
-        const step = describeTool(tool, input)
-        if (step) emit({ jobId: req.jobId, kind: 'step', text: step })
+    const text = await run(
+      cfg,
+      prompt + withJsonSchema(EventSchema),
+      {
+        onTool: (tool, input) => {
+          const step = describeTool(tool, input)
+          if (step) emit({ jobId: req.jobId, kind: 'step', text: step })
+        },
       },
-    })
+      abort?.signal,
+    )
     const out = parseJson(EventSchema, text)
     return { details: out.details, questions: out.questions.filter((q) => q.question.trim()).slice(0, 4) }
   })
@@ -526,7 +578,7 @@ export async function applyEventAnswers(cfg: OpencodeConfig, req: EventAnswersRe
       `<details>\n${req.details}\n</details>`,
       `<answers>\n${qa}\n</answers>`,
     ].join('\n\n')
-    const text = await run(cfg, prompt + withJsonSchema(z.object({ details: z.string() })))
+    const text = await run(utility(cfg), prompt + withJsonSchema(z.object({ details: z.string() })))
     return parseJson(z.object({ details: z.string() }), text)
   })
 }
@@ -571,7 +623,7 @@ export async function parseOrganisations(cfg: OpencodeConfig, text: string): Pro
 For each, keep any website they gave, and put everything they said about it in "note" as a short instruction in their words (e.g. "Mention they sponsored Campfire; ask for about 40 badges"). If something applies to several organisations ("both formal", "all of these are local"), add it to each one's note, reworded to stand alone ("Formal", not "Both formal"). Notes are instructions for writing or researching the email, so leave out the user's thinking aloud about whether to include one ("maybe", "not sure about this one"). A website alone isn't a note. Don't add anything they didn't say. Do not use any tools.`,
       `<text>\n${text}\n</text>`,
     ].join('\n\n')
-    const out = parseJson(OrganisationsSchema, await run(cfg, prompt + withJsonSchema(OrganisationsSchema)))
+    const out = parseJson(OrganisationsSchema, await run(utility(cfg), prompt + withJsonSchema(OrganisationsSchema)))
     return out.organisations.map((o) => ({ name: o.name.trim(), website: o.website.trim(), note: o.note.trim() })).filter((o) => o.name)
   })
 }

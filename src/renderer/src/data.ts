@@ -2,7 +2,8 @@ import type { Attachment, Brief, DraftRef, EmailComment, Recipient } from '../..
 
 export type { Attachment, Brief, Recipient }
 
-export type Status = 'queued' | 'researching' | 'drafted' | 'edited' | 'saved' | 'failed'
+// researched: the campaign is research-only, so there's a brief but no email yet.
+export type Status = 'queued' | 'researching' | 'researched' | 'drafted' | 'edited' | 'saved' | 'failed'
 
 export interface Proposal {
   id: string
@@ -16,13 +17,31 @@ export interface ChatMsg {
   id: string
   role: 'user' | 'assistant'
   text: string
+  // The passage of the email the user highlighted to ask about.
+  quote?: string
   proposals?: Proposal[]
   // Comments this reply pinned to the email (also stored on the prospect).
   comments?: EmailComment[]
   // Claude is still writing this reply.
   pending?: boolean
+  // While pending: what it's doing right now, e.g. "Checked Slack".
+  step?: string
+  // The user stopped this reply part-way.
+  stopped?: boolean
   // The reply failed; text holds the reason.
   error?: boolean
+}
+
+// Whether the email can be edited, chatted about and saved: there's a draft,
+// or (research-only campaigns) research is done and the user writes it.
+export const hasEmail = (p: Prospect) => p.status === 'researched' || p.status === 'drafted' || p.status === 'edited' || p.status === 'saved'
+
+// The status after the body changes. With no AI draft to compare against, an
+// empty email is still just "researched".
+export function statusAfter(p: Prospect, body: string): Status {
+  if (p.status === 'saved') return 'saved'
+  if (!p.originalBody) return body.trim() ? 'edited' : 'researched'
+  return body !== p.originalBody ? 'edited' : 'drafted'
 }
 
 // One of Claude's comments on the email, pinned to a phrase.
@@ -110,7 +129,37 @@ export interface Campaign {
   attachments: Attachment[]
   // Which voice profile drafts in this campaign are written in.
   voiceId: string
+  // Research and write the brief only; you write each email, or have the AI
+  // draft it on request. New campaigns start this way; older saves without
+  // the field kept drafting automatically.
+  researchOnly?: boolean
   deletedAt?: number
+}
+
+// Reusable text for the email editor, inserted by typing "/". Available
+// everywhere, in one folder's campaigns, or in one campaign.
+export interface Snippet {
+  id: string
+  name: string
+  // Markdown, like email bodies.
+  text: string
+  scope: { kind: 'global' } | { kind: 'folder'; id: string } | { kind: 'campaign'; id: string }
+  deletedAt?: number
+}
+
+// The snippets an email in this campaign can use, most specific first.
+export function snippetsFor(snippets: Snippet[], campaign: Pick<Campaign, 'id' | 'folderId'>): Snippet[] {
+  const rank = (s: Snippet) => (s.scope.kind === 'campaign' ? 0 : s.scope.kind === 'folder' ? 1 : 2)
+  return snippets
+    .filter(
+      (s) =>
+        !s.deletedAt &&
+        // A snippet still being written in Settings has nothing to insert yet.
+        !!s.name.trim() &&
+        !!s.text.trim() &&
+        (s.scope.kind === 'global' || (s.scope.kind === 'folder' && s.scope.id === campaign.folderId) || (s.scope.kind === 'campaign' && s.scope.id === campaign.id)),
+    )
+    .sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name))
 }
 
 export interface Voice {
@@ -145,6 +194,7 @@ export const firstRunCampaign = (folderId: string, voiceId: string): Campaign =>
   notes: '',
   attachments: [],
   voiceId,
+  researchOnly: true,
 })
 
 export const firstRunVoice = (): Voice => ({

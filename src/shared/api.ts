@@ -44,12 +44,16 @@ export interface ResearchRequest extends EmailGuidance {
   campaignNotes: string
   voice: VoiceInput
   senderName: string
+  // False to research and write the brief only, leaving the email for later.
+  draft?: boolean
 }
 
 export interface ResearchResult {
   // Free-form findings with source URLs; kept so redrafting doesn't re-search.
   research: string
-  draft: DraftResult
+  brief: Brief
+  // Missing when the request asked for research only.
+  draft?: EmailDraft
 }
 
 export interface DraftRequest extends EmailGuidance {
@@ -71,14 +75,17 @@ export interface EmailComment {
   kind: 'verify' | 'note'
 }
 
-export interface DraftResult {
-  brief: Brief
+export interface EmailDraft {
   // The recipient Claude thinks is best, or '' if none has an address.
   to: string
   subject: string
   // Markdown (the same dialect the app stores; see markdown.ts).
   body: string
   comments: EmailComment[]
+}
+
+export interface DraftResult extends EmailDraft {
+  brief: Brief
 }
 
 export interface ChatRequest extends EmailGuidance {
@@ -94,6 +101,8 @@ export interface ChatRequest extends EmailGuidance {
   body: string
   history: { role: 'user' | 'assistant'; text: string }[]
   message: string
+  // A passage of the email the user highlighted to ask about.
+  quote?: string
 }
 
 export interface ProposedEdit {
@@ -106,6 +115,8 @@ export interface ChatResult {
   text: string
   proposals: ProposedEdit[]
   comments: EmailComment[]
+  // The user stopped the reply; this is what was written up to then.
+  stopped?: boolean
 }
 
 // Onboarding: find what's known about the user's event, via the web and any
@@ -180,10 +191,22 @@ export interface MailSettings {
 // Which agent backend Inroad runs.
 export type AiProvider = 'claude' | 'opencode'
 
+// Which Claude models Inroad runs. Empty means Inroad's default.
+export interface ClaudeModels {
+  // Research, drafting, chat and event lookup.
+  model: string
+  // Quick processing jobs: splitting a typed list into organisations, folding
+  // answers into the event details.
+  utilityModel: string
+}
+
 // How Inroad reaches the opencode CLI. Empty path means "opencode" on PATH.
 export interface OpencodeSettings {
   path: string
+  // provider/model for research, drafting and chat; empty uses opencode's default.
   model: string
+  // provider/model for quick processing jobs; empty uses the model above.
+  utilityModel: string
   agent: string
 }
 
@@ -194,6 +217,7 @@ export interface PublicSettings {
   // Optional: without one, Claude runs on this computer's Claude Code sign-in.
   hasAnthropicKey: boolean
   aiProvider: AiProvider
+  claude: ClaudeModels
   opencode: OpencodeSettings
   // False when the OS has no keychain, so secrets are stored unencrypted locally.
   secureStorage: boolean
@@ -204,8 +228,11 @@ export interface SettingsPatch {
   mailPassword?: string
   anthropicKey?: string
   aiProvider?: AiProvider
+  claudeModel?: string
+  claudeUtilityModel?: string
   opencodePath?: string
   opencodeModel?: string
+  opencodeUtilityModel?: string
   opencodeAgent?: string
 }
 
@@ -258,6 +285,8 @@ export interface InroadApi {
     applyEventAnswers: (req: EventAnswersRequest) => Promise<Result<{ details: string }>>
     writingRules: (req: WritingRulesRequest) => Promise<Result<{ notes: string[] }>>
     parseOrganisations: (text: string) => Promise<Result<ParsedOrganisation[]>>
+    // Stops a running research, chat or event lookup by its jobId.
+    cancel: (jobId: string) => Promise<void>
     // Subscribe to progress for running requests; returns an unsubscribe function.
     onProgress: (cb: (p: ClaudeProgress) => void) => () => void
   }

@@ -25,7 +25,14 @@ export const commentsKey = new PluginKey<State>('comments')
 
 // Where `text` appears in the document, within a single paragraph.
 function find(doc: PMNode, text: string): [number, number] | null {
-  let hit: [number, number] | null = null
+  const at = locate(doc, text)
+  return at && [at[0], at[at.length - 1] + 1]
+}
+
+// The document position of each character of `text`, where it appears within
+// a single paragraph (a line break counts as "\n").
+export function locate(doc: PMNode, text: string): number[] | null {
+  let hit: number[] | null = null
   doc.descendants((node, pos) => {
     if (hit) return false
     if (!node.isTextblock) return true
@@ -45,7 +52,7 @@ function find(doc: PMNode, text: string): [number, number] | null {
       }
     })
     const i = s.indexOf(text)
-    if (i >= 0) hit = [at[i], at[i + text.length - 1] + 1]
+    if (i >= 0) hit = at.slice(i, i + text.length)
     return false
   })
   return hit

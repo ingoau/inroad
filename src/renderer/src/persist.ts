@@ -1,4 +1,4 @@
-import { firstRunCampaign, firstRunFolder, firstRunVoice, type Campaign, type Folder, type Prospect, type Version, type Voice } from './data'
+import { firstRunCampaign, firstRunFolder, firstRunVoice, type Campaign, type Folder, type Prospect, type Snippet, type Version, type Voice } from './data'
 import { htmlToMarkdown, looksLikeHtml, type EmailStyle } from './markdown'
 
 // Everything worth keeping between launches. UI-only state (open panels,
@@ -17,6 +17,8 @@ export interface SavedState {
   onboarded?: boolean
   // How saved emails look (Settings → Email style).
   emailStyle?: EmailStyle
+  // Settings → Snippets. Missing in saves from before snippets.
+  snippets?: Snippet[]
 }
 
 export function firstRun(): SavedState {
@@ -32,6 +34,7 @@ export function firstRun(): SavedState {
     campaignId: campaign.id,
     selectedId: '',
     onboarded: false,
+    snippets: [],
   }
 }
 
@@ -83,7 +86,9 @@ function resume(saved: SavedState): SavedState {
       status: p.status === 'researching' ? 'queued' : p.status,
       chats: p.chats.map((c) => ({
         ...c,
-        messages: c.messages.map((m) => (m.pending ? { ...m, pending: false, error: true, text: m.text || 'Interrupted when Inroad closed.' } : m)),
+        messages: c.messages.map((m) =>
+          m.pending ? { ...m, pending: false, step: undefined, error: true, text: m.text || 'Interrupted when Inroad closed.' } : m,
+        ),
       })),
     })),
   }

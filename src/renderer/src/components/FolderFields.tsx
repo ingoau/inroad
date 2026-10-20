@@ -5,7 +5,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Check, CircleAlert, Loader2, MessageCircleQuestion, Sparkles } from 'lucide-react'
 import type { EventQuestion } from '../../../shared/api'
 import { useEffect, useRef, useState } from 'react'
-import { useAgentName } from '../agent'
+import { useAiProvider } from '../agent'
 
 // The parts of a folder these fields edit.
 export interface FolderInfo {
@@ -16,7 +16,7 @@ export interface FolderInfo {
 // A folder's name and shared context, with a button that has Claude look it
 // up (usually an event) in the user's connected tools (Slack, email…) and on the web.
 export function FolderFields({ folder, onChange, autoFocus }: { folder: FolderInfo; onChange: (f: FolderInfo) => void; autoFocus?: boolean }) {
-  const agent = useAgentName()
+  const provider = useAiProvider()
   const [busy, setBusy] = useState(false)
   const [steps, setSteps] = useState<string[]>([])
   const [error, setError] = useState('')
@@ -45,7 +45,7 @@ export function FolderFields({ folder, onChange, autoFocus }: { folder: FolderIn
     setError('')
     const res = await window.api.claude.lookupEvent({ jobId: job.current, name: folder.name.trim(), hint: folder.notes.trim() || undefined })
     setBusy(false)
-    if (!res.ok) return setError(res.error)
+    if (!res.ok) return setError(res.error === 'Stopped.' ? '' : res.error)
     setQuestions(res.value.questions.map((q) => ({ ...q, answer: '' })))
     // Keep anything the user had written, above what Claude found.
     const mine = latest.current.notes.trim()
@@ -84,14 +84,20 @@ export function FolderFields({ folder, onChange, autoFocus }: { folder: FolderIn
             onKeyDown={(e) => e.key === 'Enter' && lookUp()}
             placeholder="e.g. Hack the Harbour 2026"
           />
-          <Button variant="outline" onClick={lookUp} disabled={busy || !folder.name.trim() || !window.api}>
-            {busy ? <Loader2 className="animate-spin" /> : <Sparkles />} Find details
-          </Button>
+          {busy ? (
+            <Button variant="outline" onClick={() => void window.api?.claude.cancel(job.current)}>
+              <Loader2 className="animate-spin" /> Stop
+            </Button>
+          ) : (
+            <Button variant="outline" onClick={lookUp} disabled={!folder.name.trim() || !window.api}>
+              <Sparkles /> Find details
+            </Button>
+          )}
         </div>
         <p className="text-xs text-muted-foreground">
-          {agent === 'opencode'
-            ? 'opencode searches the web. It only reads; it never sends or changes anything.'
-            : 'Claude searches the web and anything connected to your Claude account, like Slack or email. It only reads; it never sends or changes anything.'}
+          {provider === 'opencode'
+            ? 'The AI searches the web. It only reads; it never sends or changes anything.'
+            : 'The AI searches the web and your connected apps, like Slack or email. It only reads; it never sends or changes anything.'}
         </p>
       </div>
 
@@ -117,7 +123,7 @@ export function FolderFields({ folder, onChange, autoFocus }: { folder: FolderIn
       {questions.length > 0 && !busy && (
         <div className="grid gap-3 rounded-lg border bg-muted/30 p-3 text-sm">
           <div className="flex items-center gap-2 font-medium">
-            <MessageCircleQuestion className="size-4 text-muted-foreground" /> Claude has {questions.length === 1 ? 'a question' : 'a few questions'}
+            <MessageCircleQuestion className="size-4 text-muted-foreground" /> The AI has {questions.length === 1 ? 'a question' : 'a few questions'}
           </div>
           {questions.map((q, i) => (
             <div key={i} className="grid gap-1.5">

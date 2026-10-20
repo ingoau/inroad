@@ -1,51 +1,21 @@
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
-import { Separator } from '@/components/ui/separator'
-import { SidebarTrigger } from '@/components/ui/sidebar'
 import { cn } from '@/lib/utils'
-import {
-  Check,
-  Clock,
-  PenLine,
-  ExternalLink,
-  FileText,
-  GitCompare,
-  History,
-  Inbox,
-  Loader2,
-  MessageSquare,
-  Paperclip,
-  RefreshCw,
-  Search,
-  Trash2,
-  X,
-  CircleAlert,
-  MessageSquareText,
-} from 'lucide-react'
-import { useMemo, useState, type CSSProperties, type ReactNode } from 'react'
-import type { Attachment, Prospect, Version } from '../data'
-import { useAgentName } from '../agent'
+import { Check, Loader2, Paperclip, Trash2, X } from 'lucide-react'
+import { useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { hasEmail, statusAfter, type Attachment, type Comment, type Proposal, type Prospect, type Version } from '../data'
 import { changeCount } from '../diff'
 import { plainText } from '../markdown'
 import { DiffText } from './DiffText'
-import { ButtonKeys, Hint } from './hint'
+import { Shortcut } from './hint'
 import { RichEditor } from './RichEditor'
 import type { Tab } from './RightPanel'
-import { StatusBadge } from './status'
+import type { SnippetItem } from './snippetMenu'
+import { TopBar } from './TopBar'
 
 interface Props {
   prospect: Prospect
-  // "Name <address>" from the mailbox settings, or '' before they're set up.
-  from: string
   // CSS variables previewing Settings → Email style.
   bodyStyle: CSSProperties
   voiceName: string
@@ -57,30 +27,49 @@ interface Props {
   onRegenerate: () => void
   onRestoreVersion: (v: Version) => void
   onDeleteVersion: (v: Version) => void
+  historyOpen: boolean
+  onHistoryOpenChange: (open: boolean) => void
   onChange: (patch: Partial<Prospect>) => void
   onSave: () => void
   onRetry: (website: string) => void
-  // Which right-panel tab is showing (null when the panel is closed).
+  onStopResearch: () => void
+  // Which side-column tab is showing (null when it's closed).
   panelTab: Tab | null
-  // False when the docked panel already shows its own Brief / Chat tabs.
-  showPanelButtons: boolean
-  pendingSuggestions: number
   onPanel: (tab: Tab) => void
   onDismissComment: (id: string) => void
+  // The active chat's pending suggestions, shown in the email.
+  proposals: (Proposal & { msgId: string })[]
+  onProposal: (msgId: string, proposalId: string, accept: boolean) => void
+  onAsk: (text: string) => void
+  snippets: SnippetItem[]
+  snippetScopes: { value: string; label: string }[]
+  onSaveSnippet: (name: string, markdown: string, scope: string) => void
+}
+
+// Text that acts like a link: quiet until hovered.
+function Quiet({ onClick, active, disabled, children, className }: { onClick?: () => void; active?: boolean; disabled?: boolean; children: ReactNode; className?: string }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className={cn('text-muted-foreground transition-colors hover:text-foreground disabled:pointer-events-none disabled:opacity-50', active && 'text-foreground', className)}
+    >
+      {children}
+    </button>
+  )
 }
 
 export function Editor(props: Props) {
   const { prospect: p, queuePosition, attachments, showDiff, onToggleDiff, regenerating, onChange, onSave, onRetry } = props
-  const agent = useAgentName()
   const [newTo, setNewTo] = useState('')
   const [website, setWebsite] = useState('')
+  // Research-only campaigns have an email to write but no AI draft yet.
   const hasDraft = !!p.originalBody
-  // Diffs compare the markdown itself, so link and formatting changes show too.
-  const originalText = p.originalBody
-  const bodyText = p.body
-  const changes = hasDraft ? changeCount(originalText, bodyText) : 0
+  const editable = hasEmail(p)
+  const changes = hasDraft ? changeCount(p.originalBody, p.body) : 0
+  const pending = props.proposals.length
 
-  // Claude's comments whose phrase is still in the email. Matched as plain
+  // The AI's comments whose phrase is still in the email. Matched as plain
   // text, so a quote survives the markdown being written slightly differently.
   const bodyPlain = useMemo(() => plainText(p.body), [p.body])
   const comments = useMemo(
@@ -93,70 +82,78 @@ export function Editor(props: Props) {
   )
   const highlights = useMemo(() => comments.map((c) => ({ id: c.id, text: c.plain, kind: c.kind, title: c.comment })), [comments])
   const [activeComment, setActiveComment] = useState<string | null>(null)
-  const showComment = (id: string) => {
-    setActiveComment(id)
-    document.getElementById(`comment-${id}`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
-  }
-  const showPhrase = (id: string) => {
-    setActiveComment(id)
-    document.querySelector(`[data-comment="${id}"]`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
-  }
 
-  const setBody = (body: string) =>
-    onChange({
-      body,
-      status: p.status === 'saved' ? 'saved' : body === p.originalBody ? 'drafted' : 'edited',
-    })
+  // Suggestions for the subject show under it; the rest go inline in the body.
+  const subjectProposals = props.proposals.filter((x) => p.subject.includes(x.old) && !p.body.includes(x.old))
+  // The one ⌘⇧↵ / ⌘⇧⌫ act on is the first pending suggestion, wherever it is.
+  const nextId = props.proposals[0]?.id
+  const inline = useMemo(
+    () =>
+      props.proposals
+        .filter((x) => !subjectProposals.includes(x))
+        .map((x) => ({ id: `${x.msgId}:${x.id}`, old: plainText(x.old), new: plainText(x.new), reason: x.reason, next: x.id === nextId })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [JSON.stringify(props.proposals), p.subject, p.body],
+  )
+  const resolveInline = (id: string, accept: boolean) => {
+    const [msgId, propId] = id.split(':')
+    props.onProposal(msgId, propId, accept)
+  }
+  const resolveNext = (accept: boolean) => props.proposals[0] && props.onProposal(props.proposals[0].msgId, props.proposals[0].id, accept)
+
+  const setBody = (body: string) => onChange({ body, status: statusAfter(p, body) })
 
   return (
     <div className="@container flex h-full min-w-0 flex-col bg-background">
-      <header className="drag flex h-12 shrink-0 items-center gap-2 border-b px-3">
-        <Hint label="Toggle sidebar" keys="⌘ \">
-          <SidebarTrigger />
-        </Hint>
-        <Separator orientation="vertical" className="mr-1 data-[orientation=vertical]:h-4" />
-        <div className="flex min-w-0 flex-1 items-center gap-2">
-          <h1 className="truncate font-heading text-base font-semibold">{p.company}</h1>
-          {p.domain && (
-            <a
-              href={/^https?:\/\//.test(p.domain) ? p.domain : `https://${p.domain}`}
-              target="_blank"
-              rel="noreferrer"
-              className="hidden shrink-0 items-center gap-1 text-xs text-muted-foreground hover:text-foreground @lg:inline-flex"
-            >
-              {p.domain} <ExternalLink className="size-3" />
-            </a>
-          )}
-          <StatusBadge status={p.status} />
-        </div>
-        {props.showPanelButtons && (
+      <TopBar>
+        <div className="flex-1" />
+        {/* With the side column open, its own Brief / Chat tabs take over. */}
+        {!props.panelTab && (
           <>
-            <Hint label="Brief" keys="⌘ ⇧ B">
-              <Button variant={props.panelTab === 'brief' ? 'secondary' : 'ghost'} size="sm" onClick={() => props.onPanel('brief')}>
-                <FileText /> <span className="@max-md:hidden">Brief</span>
-              </Button>
-            </Hint>
-            <Hint label={`Chat with ${agent}`} keys="⌘ /">
-              <Button variant={props.panelTab === 'chat' ? 'secondary' : 'ghost'} size="sm" onClick={() => props.onPanel('chat')}>
-                <MessageSquare /> <span className="@max-md:hidden">Chat</span>
-                {props.pendingSuggestions > 0 && <Badge className="h-4 min-w-4 bg-mark px-1 text-[10px] text-black">{props.pendingSuggestions}</Badge>}
-              </Button>
-            </Hint>
+            <Quiet onClick={() => props.onPanel('brief')}>
+              Brief <Shortcut keys="⌘⇧B" className="@max-md:hidden" />
+            </Quiet>
+            <Quiet onClick={() => props.onPanel('chat')}>
+              Chat
+              {pending > 0 && <span className="ml-1 text-mark-text">{pending}</span>}
+              <Shortcut keys="⌘/" className="@max-md:hidden" />
+            </Quiet>
           </>
         )}
-      </header>
+        {editable && (
+          <HistoryMenu
+            open={props.historyOpen}
+            onOpenChange={props.onHistoryOpenChange}
+            versions={p.versions.filter((v) => !v.deletedAt)}
+            current={p.body}
+            onRestore={props.onRestoreVersion}
+            onDelete={props.onDeleteVersion}
+          />
+        )}
+      </TopBar>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-[720px] px-8 py-6 @max-xl:px-4">
+        <div className="relative mx-auto max-w-[600px] px-6 pt-12 pb-20">
           {p.status === 'queued' && (
-            <Notice icon={<Clock />} title="Waiting in queue">
-              {queuePosition > 0 ? `${queuePosition} ahead. Research runs 3 at a time.` : 'Starting shortly.'}
+            <Notice title="Waiting in the queue">{queuePosition > 0 ? `${queuePosition} ahead. Research runs 3 at a time.` : 'Starting shortly.'}</Notice>
+          )}
+          {p.status === 'researching' && (
+            <Notice title="Researching" spinner>
+              <ol className="space-y-1">
+                {p.progress.slice(-6).map((step, i, all) => (
+                  <li key={i} className={i === all.length - 1 ? 'text-foreground' : ''}>
+                    {step}
+                  </li>
+                ))}
+              </ol>
+              <Quiet onClick={props.onStopResearch} className="mt-4">
+                Stop
+              </Quiet>
             </Notice>
           )}
-          {p.status === 'researching' && <Researching prospect={p} />}
           {p.status === 'failed' && (
-            <Notice icon={<Search />} title="Research didn’t finish">
-              <p className="mb-3">{p.error}</p>
+            <Notice title="Research didn’t finish">
+              <p className="mb-4">{p.error}</p>
               <form
                 className="flex max-w-md gap-2"
                 onSubmit={(e) => {
@@ -165,65 +162,62 @@ export function Editor(props: Props) {
                   setWebsite('')
                 }}
               >
-                <Input
-                  value={website}
-                  onChange={(e) => setWebsite(e.target.value)}
-                  placeholder={p.domain || 'Their website (optional)'}
-                  aria-label="Website"
-                  className="bg-background"
-                />
-                <Button type="submit">
-                  <RefreshCw /> Retry
+                <Input value={website} onChange={(e) => setWebsite(e.target.value)} placeholder={p.domain || 'Their website (optional)'} aria-label="Website" />
+                <Button type="submit" variant="secondary">
+                  Retry
                 </Button>
               </form>
             </Notice>
           )}
 
-          {hasDraft && (
+          {editable && (
             <>
-              <div className="text-sm">
-                <Field label="From">
-                  <span className="truncate text-muted-foreground">{props.from || 'Set up your mailbox in Settings'}</span>
-                  <Badge variant="outline" className="ml-auto shrink-0 font-normal text-muted-foreground">
-                    <PenLine className="size-3" /> {props.voiceName}
-                  </Badge>
-                </Field>
-                <Field label="To">
-                  <div className="flex flex-1 flex-wrap items-center gap-1.5">
-                    {p.to.map((e) => (
-                      <Badge key={e} variant="secondary" className="gap-1 pr-1 font-normal">
-                        {e}
-                        <button
-                          onClick={() => onChange({ to: p.to.filter((x) => x !== e) })}
-                          className="rounded-sm opacity-60 hover:opacity-100"
-                          title="Remove"
-                        >
-                          <X className="size-3" />
-                        </button>
-                      </Badge>
-                    ))}
-                    <input
-                      value={newTo}
-                      onChange={(e) => setNewTo(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && newTo.trim()) {
-                          onChange({ to: [...p.to, newTo.trim()] })
-                          setNewTo('')
-                        }
-                      }}
-                      placeholder={p.to.length ? '' : 'Type an address, or press T to add the top suggestion'}
-                      className="min-w-40 flex-1 bg-transparent outline-none placeholder:text-muted-foreground"
-                    />
-                  </div>
-                </Field>
-                <Field label="Subject">
-                  <input value={p.subject} onChange={(e) => onChange({ subject: e.target.value })} className="flex-1 bg-transparent font-medium outline-none" />
-                </Field>
+              <div className="flex flex-wrap items-center gap-1.5 text-sm text-muted-foreground">
+                <span>To</span>
+                {p.to.map((e) => (
+                  <span key={e} className="group inline-flex items-center gap-1 text-foreground">
+                    {e}
+                    <button onClick={() => onChange({ to: p.to.filter((x) => x !== e) })} className="opacity-0 group-hover:opacity-60 hover:opacity-100!" title="Remove">
+                      <X className="size-3" />
+                    </button>
+                  </span>
+                ))}
+                <input
+                  value={newTo}
+                  onChange={(e) => setNewTo(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && newTo.trim()) {
+                      onChange({ to: [...p.to, newTo.trim()] })
+                      setNewTo('')
+                    }
+                  }}
+                  aria-label="Add a recipient"
+                  placeholder={p.to.length ? '' : 'an address, or press T for the top suggestion'}
+                  className="min-w-40 flex-1 bg-transparent text-foreground outline-none placeholder:text-muted-foreground/60"
+                />
               </div>
+              <input
+                value={p.subject}
+                onChange={(e) => onChange({ subject: e.target.value })}
+                aria-label="Subject"
+                placeholder="Subject"
+                className="mt-2 mb-6 w-full bg-transparent font-heading text-2xl font-medium outline-none placeholder:text-muted-foreground/50"
+              />
+              {subjectProposals.map((x) => (
+                <div key={x.id} className="-mt-4 mb-6 flex items-center gap-3 text-sm" title={x.reason}>
+                  <span className="min-w-0 flex-1 truncate">
+                    <DiffText a={p.subject} b={p.subject.replace(x.old, () => x.new)} />
+                  </span>
+                  <Quiet onClick={() => props.onProposal(x.msgId, x.id, true)} className="text-mark-text">
+                    Accept
+                  </Quiet>
+                  <Quiet onClick={() => props.onProposal(x.msgId, x.id, false)}>Reject</Quiet>
+                </div>
+              ))}
 
               {showDiff ? (
-                <div className="email-body py-5 whitespace-pre-wrap">
-                  <DiffText a={originalText} b={bodyText} />
+                <div className="email-body whitespace-pre-wrap" style={props.bodyStyle}>
+                  <DiffText a={p.originalBody} b={p.body} />
                 </div>
               ) : (
                 <div className={cn(regenerating && 'pointer-events-none animate-pulse opacity-40')} style={props.bodyStyle}>
@@ -233,136 +227,182 @@ export function Editor(props: Props) {
                     onChange={setBody}
                     highlights={highlights}
                     activeHighlight={activeComment}
-                    onHighlightClick={showComment}
+                    onHighlightClick={setActiveComment}
+                    suggestions={inline}
+                    onSuggestion={resolveInline}
+                    onAsk={props.onAsk}
+                    snippets={props.snippets}
+                    snippetScopes={props.snippetScopes}
+                    onSaveSnippet={props.onSaveSnippet}
                   />
                 </div>
               )}
 
-              {comments.length > 0 && !showDiff && (
-                <div className="mt-5 grid gap-1.5" onMouseLeave={() => setActiveComment(null)}>
-                  {comments.map((c) => (
-                    <div
-                      key={c.id}
-                      id={`comment-${c.id}`}
-                      onMouseEnter={() => setActiveComment(c.id)}
-                      onClick={() => showPhrase(c.id)}
-                      className={cn(
-                        'group flex cursor-pointer items-start gap-2.5 rounded-lg border px-3 py-2 text-sm transition-colors',
-                        activeComment === c.id ? 'border-mark/60 bg-mark/10' : 'hover:bg-muted/40',
-                      )}
-                    >
-                      {c.kind === 'verify' ? (
-                        <CircleAlert className="mt-0.5 size-4 shrink-0 text-mark" aria-label="Check this" />
-                      ) : (
-                        <MessageSquareText className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-label="Note" />
-                      )}
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate text-xs text-muted-foreground">
-                          {c.kind === 'verify' ? 'Check' : 'Note'} · “{c.plain}”
-                        </div>
-                        <div className="leading-snug">{c.comment}</div>
-                      </div>
-                      <Button
-                        variant="ghost"
-                        size="icon-xs"
-                        title="Dismiss"
-                        className="text-muted-foreground opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          props.onDismissComment(c.id)
-                        }}
-                      >
-                        <X />
-                      </Button>
-                    </div>
-                  ))}
-                </div>
+              {/* Wide enough: comments sit in the margin beside their phrase. Otherwise they're listed under the email. */}
+              {!showDiff && comments.length > 0 && (
+                <MarginNotes
+                  comments={comments}
+                  body={p.body}
+                  active={activeComment}
+                  onActive={setActiveComment}
+                  onDismiss={props.onDismissComment}
+                  onAsk={(c) => props.onAsk(c.plain)}
+                />
               )}
 
-              <Separator className="mt-6 mb-3" />
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="mt-10 flex flex-wrap items-center gap-x-5 gap-y-3 text-sm">
+                <Button onClick={onSave} className="h-9 rounded-full px-4">
+                  {p.status === 'saved' && <Check />}
+                  {p.status === 'saved' ? 'Update draft' : 'Save to Drafts'}
+                  <span className="opacity-60">⌘↵</span>
+                </Button>
+                <Quiet onClick={props.onRegenerate} disabled={regenerating}>
+                  {regenerating && <Loader2 className="mr-1 inline size-3.5 animate-spin" />}
+                  {hasDraft ? (regenerating ? 'Regenerating…' : 'Regenerate') : regenerating ? 'Writing…' : 'Write with AI'}
+                  <Shortcut keys="⌘R" />
+                </Quiet>
+                {changes > 0 && (
+                  <Quiet active={showDiff} onClick={onToggleDiff}>
+                    {showDiff ? 'Hide changes' : `${changes} change${changes === 1 ? '' : 's'}`}
+                    <Shortcut keys="⌘D" />
+                  </Quiet>
+                )}
+                {pending > 0 && (
+                  <span className="text-muted-foreground">
+                    {pending} suggestion{pending === 1 ? '' : 's'} ·{' '}
+                    <Quiet onClick={() => resolveNext(true)} className="text-mark-text">
+                      accept <Shortcut keys="⌘⇧↵" className="ml-0.5" />
+                    </Quiet>{' '}
+                    ·{' '}
+                    <Quiet onClick={() => resolveNext(false)}>
+                      reject <Shortcut keys="⌘⇧⌫" className="ml-0.5" />
+                    </Quiet>
+                  </span>
+                )}
+              </div>
+              <p className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground/70">
                 {attachments.map((f) => (
-                  <Badge key={f.id} variant="outline" className="gap-1.5 font-normal">
+                  <span key={f.id} className="inline-flex items-center gap-1">
                     <Paperclip className="size-3" />
                     {f.name}
-                  </Badge>
+                  </span>
                 ))}
-                <span className="text-xs text-muted-foreground">
-                  {changes > 0
-                    ? `${changes} change${changes === 1 ? '' : 's'} from ${agent}’s draft. Saving teaches your voice profile from them.`
-                    : `${agent}’s draft, unedited.`}
-                </span>
-              </div>
+                {!hasDraft && <span>No AI draft yet. Write it here, or have the AI draft it from the research.</span>}
+                {changes > 0 && <span>Saving teaches {props.voiceName} from your edits.</span>}
+              </p>
             </>
           )}
         </div>
       </div>
-
-      {hasDraft && (
-        <footer className="flex h-12 shrink-0 items-center gap-1 border-t px-3">
-          <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
-            <HistoryMenu
-              versions={p.versions.filter((v) => !v.deletedAt)}
-              current={p.body}
-              onRestore={props.onRestoreVersion}
-              onDelete={props.onDeleteVersion}
-            />
-            <Hint label="Write a fresh draft from the same brief" keys="⌘ R" side="top">
-              <Button variant="ghost" size="sm" onClick={props.onRegenerate} disabled={regenerating}>
-                <RefreshCw className={cn(regenerating && 'animate-spin')} />
-                <span className="@max-md:hidden">{regenerating ? 'Regenerating…' : 'Regenerate'}</span>
-              </Button>
-            </Hint>
-            <Hint label={`Compare with ${agent}’s draft`} keys="⌘ D" side="top">
-              <Button variant={showDiff ? 'secondary' : 'ghost'} size="sm" onClick={onToggleDiff} disabled={changes === 0}>
-                <GitCompare /> <span className="@max-md:hidden">Changes</span>
-                {changes > 0 && <span className="text-muted-foreground">{changes}</span>}
-              </Button>
-            </Hint>
-          </div>
-          <Button size="sm" onClick={onSave}>
-            {p.status === 'saved' ? <Check /> : <Inbox />}
-            {p.status === 'saved' ? 'Update draft' : 'Save to drafts'}
-            <ButtonKeys keys="⌘ ↵" primary className="@max-md:hidden" />
-          </Button>
-        </footer>
-      )}
     </div>
   )
 }
 
-function Field({ label, children }: { label: string; children: ReactNode }) {
+function Notice({ title, spinner, children }: { title: string; spinner?: boolean; children: ReactNode }) {
   return (
-    <div className="flex min-h-9 items-center gap-3 border-b py-1">
-      <span className="w-14 shrink-0 text-xs text-muted-foreground">{label}</span>
+    <div className="text-sm text-muted-foreground">
+      <div className="mb-2 flex items-center gap-2 font-heading text-2xl font-medium text-foreground">
+        {title}
+        {spinner && <Loader2 className="size-4 animate-spin text-muted-foreground" />}
+      </div>
       {children}
     </div>
   )
 }
 
-function Notice({ icon, title, children }: { icon: ReactNode; title: string; children: ReactNode }) {
-  return (
-    <div className="flex gap-3 rounded-lg border bg-muted/40 p-4 text-sm text-muted-foreground [&>svg]:mt-0.5 [&>svg]:size-4 [&>svg]:shrink-0">
-      {icon}
-      <div className="min-w-0 flex-1">
-        <div className="mb-1 font-medium text-foreground">{title}</div>
-        {children}
-      </div>
+type Placed = Comment & { plain: string }
+
+// The AI's comments, beside the phrase each one is about. Positions come from
+// the highlighted phrases in the editor, measured after every render, and are
+// pushed down so notes never overlap.
+function MarginNotes({
+  comments,
+  body,
+  active,
+  onActive,
+  onDismiss,
+  onAsk,
+}: {
+  comments: Placed[]
+  body: string
+  active: string | null
+  onActive: (id: string | null) => void
+  onDismiss: (id: string) => void
+  onAsk: (c: Placed) => void
+}) {
+  const [tops, setTops] = useState<Record<string, number>>({})
+  const notes = useRef<Record<string, HTMLDivElement | null>>({})
+  const host = useRef<HTMLDivElement>(null)
+
+  useLayoutEffect(() => {
+    // Positions are relative to the email column the notes sit beside.
+    const box = host.current?.parentElement
+    if (!box) return
+    const place = () => {
+      const base = box.getBoundingClientRect().top
+      const raw = comments
+        .map((c) => {
+          const el = box.querySelector(`[data-comment="${c.id}"]`)
+          return { id: c.id, top: el ? el.getBoundingClientRect().top - base : 0 }
+        })
+        .sort((a, b) => a.top - b.top)
+      const next: Record<string, number> = {}
+      let floor = 0
+      for (const r of raw) {
+        const top = Math.max(r.top, floor)
+        next[r.id] = top
+        floor = top + (notes.current[r.id]?.offsetHeight ?? 48) + 12
+      }
+      setTops((prev) => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next))
+    }
+    place()
+    // The editor draws the highlights after this runs, and text reflows as you
+    // type, so measure again whenever either changes.
+    const ro = new ResizeObserver(place)
+    ro.observe(box)
+    const mo = new MutationObserver(place)
+    mo.observe(box, { subtree: true, childList: true, characterData: true, attributeFilter: ['data-comment'] })
+    return () => {
+      ro.disconnect()
+      mo.disconnect()
+    }
+  }, [comments, body])
+
+  const note = (c: Placed, margin: boolean) => (
+    <div
+      key={c.id}
+      ref={margin ? (el) => void (notes.current[c.id] = el) : undefined}
+      onMouseEnter={() => onActive(c.id)}
+      onMouseLeave={() => onActive(null)}
+      style={margin ? { top: tops[c.id] ?? 0, visibility: c.id in tops ? undefined : 'hidden' } : undefined}
+      className={cn(
+        'text-xs leading-relaxed text-muted-foreground transition-opacity',
+        margin && 'absolute left-[calc(100%+8px)] w-52',
+        active && active !== c.id && 'opacity-50',
+      )}
+    >
+      <span className={c.kind === 'verify' ? 'text-mark-text' : 'text-foreground'}>{c.kind === 'verify' ? 'Check' : 'Note'}</span> · {c.comment}
+      {!margin && <span className="text-muted-foreground/60"> “{c.plain}”</span>}
+      <span className="mt-0.5 flex gap-2">
+        {c.kind === 'verify' && (
+          <button className="hover:text-foreground" onClick={() => onAsk(c)}>
+            Ask AI
+          </button>
+        )}
+        <button className="hover:text-foreground" onClick={() => onDismiss(c.id)}>
+          Dismiss
+        </button>
+      </span>
     </div>
   )
-}
 
-function Researching({ prospect: p }: { prospect: Prospect }) {
   return (
-    <Notice icon={<Loader2 className="animate-spin" />} title="Researching">
-      <ol className="space-y-1">
-        {p.progress.map((step, i) => (
-          <li key={i} className={i === p.progress.length - 1 ? 'text-foreground' : ''}>
-            {step}
-          </li>
-        ))}
-      </ol>
-    </Notice>
+    <>
+      <div ref={host} className="hidden @[1100px]:block">
+        {comments.map((c) => note(c, true))}
+      </div>
+      <div className="mt-8 grid gap-3 @[1100px]:hidden">{comments.map((c) => note(c, false))}</div>
+    </>
   )
 }
 
@@ -375,36 +415,39 @@ function ago(at: number) {
 }
 
 function HistoryMenu({
+  open,
+  onOpenChange,
   versions,
   current,
   onRestore,
   onDelete,
 }: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
   versions: Version[]
   current: string
   onRestore: (v: Version) => void
   onDelete: (v: Version) => void
 }) {
-  const agent = useAgentName()
   return (
-    <DropdownMenu>
+    <DropdownMenu open={open} onOpenChange={onOpenChange}>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="sm">
-          <History /> <span className="@max-md:hidden">History</span> <span className="text-muted-foreground">{versions.length}</span>
-        </Button>
+        <button className="text-muted-foreground transition-colors hover:text-foreground data-[state=open]:text-foreground">
+          History <Shortcut keys="⌘⇧H" className="@max-md:hidden" />
+        </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent side="top" align="start" className="w-72">
+      <DropdownMenuContent align="end" className="w-72">
         <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">Restore a version. ⌘Z undoes it.</DropdownMenuLabel>
         <DropdownMenuSeparator />
+        {versions.length === 0 && <p className="px-2 py-1.5 text-sm text-muted-foreground">Nothing yet.</p>}
         {[...versions].reverse().map((v) => {
           const isCurrent = v.markdown === current
           return (
             <DropdownMenuItem key={v.id} disabled={isCurrent} onSelect={() => onRestore(v)}>
-              <span className={cn('size-1.5 shrink-0 rounded-full', v.by === 'claude' ? 'bg-primary' : 'bg-success')} />
               <span className="flex min-w-0 flex-1 flex-col">
                 <span className="truncate">{v.label}</span>
                 <span className="text-xs text-muted-foreground">
-                  {v.by === 'claude' ? agent : 'You'} · {ago(v.at)}
+                  {v.by === 'claude' ? 'AI' : 'You'} · {ago(v.at)}
                 </span>
               </span>
               {isCurrent ? (

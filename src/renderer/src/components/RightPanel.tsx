@@ -1,29 +1,7 @@
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardFooter, CardHeader } from '@/components/ui/card'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 import Markdown from 'react-markdown'
-import {
-  ArrowUp,
-  Check,
-  ChevronsUpDown,
-  CircleAlert,
-  ExternalLink,
-  FileText,
-  Link2,
-  Loader2,
-  MessageSquare,
-  MessageSquarePlus,
-  MessageSquareText,
-  Sparkles,
-  Trash2,
-  Undo2,
-  UserPlus,
-  X,
-} from 'lucide-react'
+import { Loader2, X } from 'lucide-react'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   DropdownMenu,
@@ -34,10 +12,9 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import type { ChatThread, Prospect, Recipient } from '../data'
-import { useAgentName } from '../agent'
-import { DiffText } from './DiffText'
-import { ButtonKeys, Hint } from './hint'
+import { hasEmail, type ChatMsg, type ChatThread, type Proposal, type Prospect } from '../data'
+import { plainText } from '../markdown'
+import { Shortcut } from './hint'
 
 export type Tab = 'brief' | 'chat'
 
@@ -49,8 +26,15 @@ interface Props {
   onAddRecipient: (email: string) => void
   onNote: (note: string) => void
   onProposal: (msgId: string, proposalId: string, accept: boolean) => void
+  // Accept or reject every pending suggestion in one reply.
+  onProposalsAll: (msgId: string, accept: boolean) => void
   onRevertProposal: (msgId: string, proposalId: string) => void
   onSend: (text: string) => void
+  // Stops the reply being written.
+  onStop: () => void
+  // A passage of the email to ask about, attached to the next message.
+  quote: string | null
+  onClearQuote: () => void
   onNewChat: () => void
   onSelectChat: (id: string) => void
   onDeleteChat: (id: string) => void
@@ -62,32 +46,63 @@ export function activeChat(p: Prospect): ChatThread | undefined {
   return alive.find((c) => c.id === p.activeChatId) ?? alive.at(-1)
 }
 
-export function RightPanel(props: Props) {
-  const { prospect: p, tab, onTab, onClose, onAddRecipient } = props
-  const pending = (activeChat(p)?.messages ?? []).flatMap((m) => m.proposals ?? []).filter((x) => x.state === 'pending').length
-
+// Text that acts like a link: quiet until hovered.
+function Quiet({ onClick, active, title, children, className }: { onClick?: () => void; active?: boolean; title?: string; children: ReactNode; className?: string }) {
   return (
-    <div className="flex h-full min-w-0 flex-col bg-sidebar">
-      <div className="drag flex h-12 shrink-0 items-center gap-2 border-b px-3">
-        <Tabs value={tab} onValueChange={(v) => onTab(v as Tab)}>
-          <TabsList>
-            <TabsTrigger value="brief">
-              <FileText /> Brief
-            </TabsTrigger>
-            <TabsTrigger value="chat">
-              <MessageSquare /> Chat
-              {pending > 0 && <Badge className="h-4 min-w-4 bg-mark px-1 text-[10px] text-black">{pending}</Badge>}
-            </TabsTrigger>
-          </TabsList>
-        </Tabs>
+    <button onClick={onClick} title={title} className={cn('text-muted-foreground transition-colors hover:text-foreground', active && 'text-foreground', className)}>
+      {children}
+    </button>
+  )
+}
+
+// A borderless column beside the email: the brief or the chat, never both.
+export function RightPanel(props: Props) {
+  const { prospect: p, tab, onClose } = props
+  // Clicking the tab that's already showing closes the column, like the links in the email's top bar.
+  const onTab = (t: Tab) => (t === tab ? onClose() : props.onTab(t))
+  const thread = activeChat(p)
+  const threads = p.chats.filter((c) => !c.deletedAt)
+  return (
+    <div id="side-panel" className="@container/panel flex h-full min-w-0 flex-col bg-background text-sm">
+      <div className="drag flex h-12 shrink-0 items-center gap-5 px-6 whitespace-nowrap">
+        <Quiet active={tab === 'brief'} onClick={() => onTab('brief')} title={tab === 'brief' ? 'Hide' : undefined} className={cn(tab === 'brief' && 'shadow-[inset_0_-1px_0_currentColor]')}>
+          Brief <Shortcut keys="⌘⇧B" className="hidden @xs/panel:inline" />
+        </Quiet>
+        <Quiet active={tab === 'chat'} onClick={() => onTab('chat')} title={tab === 'chat' ? 'Hide' : undefined} className={cn(tab === 'chat' && 'shadow-[inset_0_-1px_0_currentColor]')}>
+          Chat <Shortcut keys="⌘/" className="hidden @xs/panel:inline" />
+        </Quiet>
         <div className="flex-1" />
-        <Hint label="Close panel" keys="⌘ ⇧ \">
-          <Button variant="ghost" size="icon-sm" onClick={onClose}>
-            <X />
-          </Button>
-        </Hint>
+        {tab === 'chat' && hasEmail(p) && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button className="max-w-40 truncate text-muted-foreground hover:text-foreground">{thread?.title ?? 'New chat'} ⌄</button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-64">
+              {threads.length > 0 && (
+                <>
+                  <DropdownMenuRadioGroup value={thread?.id} onValueChange={props.onSelectChat}>
+                    {[...threads].reverse().map((c) => (
+                      <DropdownMenuRadioItem key={c.id} value={c.id}>
+                        <span className="truncate">{c.title}</span>
+                      </DropdownMenuRadioItem>
+                    ))}
+                  </DropdownMenuRadioGroup>
+                  <DropdownMenuSeparator />
+                </>
+              )}
+              <DropdownMenuItem onSelect={props.onNewChat}>
+                New chat <Shortcut keys="⌘N" className="ml-auto" />
+              </DropdownMenuItem>
+              {thread && (
+                <DropdownMenuItem variant="destructive" onSelect={() => props.onDeleteChat(thread.id)}>
+                  Delete this chat
+                </DropdownMenuItem>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
       </div>
-      {tab === 'brief' ? <BriefView prospect={p} onAddRecipient={onAddRecipient} onNote={props.onNote} /> : <ChatView {...props} />}
+      {tab === 'brief' ? <BriefView prospect={p} onAddRecipient={props.onAddRecipient} onNote={props.onNote} /> : <ChatView {...props} />}
     </div>
   )
 }
@@ -95,25 +110,9 @@ export function RightPanel(props: Props) {
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section>
-      <h3 className="mb-2 text-xs font-medium text-muted-foreground">{title}</h3>
+      <h3 className="mb-1.5 text-xs text-muted-foreground">{title}</h3>
       {children}
     </section>
-  )
-}
-
-// Your instructions for this organisation, editable any time. Claude follows
-// them on the next regenerate or chat message.
-function NoteField({ prospect: p, onNote }: { prospect: Prospect; onNote: (note: string) => void }) {
-  return (
-    <Section title="Your note">
-      <Textarea
-        value={p.note ?? ''}
-        onChange={(e) => onNote(e.target.value)}
-        placeholder={`Anything Claude should say or look for with ${p.company}`}
-        className="min-h-16 resize-none bg-background text-sm"
-      />
-      {p.note?.trim() && p.originalBody && <p className="mt-1.5 text-xs text-muted-foreground">Changed it? Regenerate (⌘R) or ask in chat to apply it.</p>}
-    </Section>
   )
 }
 
@@ -124,52 +123,80 @@ function BriefView({ prospect: p, onAddRecipient, onNote }: { prospect: Prospect
     try {
       return new URL(url).hostname.replace(/^www\./, '')
     } catch {
-      return ''
+      return url
     }
   }
+  const confidence = { high: 'high', medium: 'medium', low: 'guessed' }
+  // Your instructions for this organisation, editable any time.
+  const note = (
+    <Section title="Your note">
+      <textarea
+        value={p.note ?? ''}
+        onChange={(e) => onNote(e.target.value)}
+        rows={2}
+        placeholder={`Anything the AI should say or look for with ${p.company}`}
+        className="field-sizing-content w-full resize-none bg-transparent leading-relaxed outline-none placeholder:text-muted-foreground/60"
+      />
+      {p.note?.trim() && hasEmail(p) && <p className="text-xs text-muted-foreground/70">Regenerate (⌘R) or ask in chat to apply it.</p>}
+    </Section>
+  )
   if (!b)
     return (
-      <div className="space-y-5 p-4 text-sm">
-        <NoteField prospect={p} onNote={onNote} />
+      <div className="space-y-6 px-6 py-4 leading-relaxed">
         <p className="text-muted-foreground">The brief appears here once {p.company} has been researched.</p>
+        {note}
       </div>
     )
 
   return (
     <ScrollArea className="min-h-0 flex-1 [&_[data-slot=scroll-area-viewport]>div]:block!">
-      <div className="space-y-5 p-4 text-sm">
-        <NoteField prospect={p} onNote={onNote} />
-        <Section title="Summary">
-          <p className="leading-relaxed">{b.summary}</p>
+      <div className="space-y-6 px-6 py-4 leading-relaxed">
+        <Section title={p.company}>
+          <p>{b.summary}</p>
         </Section>
-
-        <Section title="Possible recipients">
-          <div className="space-y-2">
-            {b.recipients.map((r) => (
-              <RecipientCard key={r.name} r={r} added={p.to.includes(r.email)} onAdd={() => onAddRecipient(r.email)} />
-            ))}
+        <Section title="Write to">
+          <div className="space-y-1.5">
+            {b.recipients.map((r) => {
+              const added = !!r.email && p.to.includes(r.email)
+              return (
+                <div key={r.name}>
+                  <span>{r.name}</span>
+                  {r.role && <span className="text-muted-foreground">, {r.role}</span>}
+                  <div className="text-xs text-muted-foreground">
+                    {r.email || 'No address found'} · {confidence[r.confidence]}
+                    {r.email &&
+                      (added ? (
+                        <span className="text-success"> · added</span>
+                      ) : (
+                        <>
+                          {' · '}
+                          <button onClick={() => onAddRecipient(r.email)} className="text-foreground hover:underline">
+                            add
+                          </button>
+                        </>
+                      ))}
+                  </div>
+                </div>
+              )
+            })}
           </div>
         </Section>
-
         {b.sections.map((section) => (
           <Section key={section.title} title={section.title}>
-            <ul className="list-disc space-y-1 pl-4 marker:text-muted-foreground">
+            <ul className="list-disc space-y-0.5 pl-4 marker:text-muted-foreground">
               {section.items.map((item) => (
                 <li key={item}>{item}</li>
               ))}
             </ul>
           </Section>
         ))}
-
+        {note}
         <Section title="Sources">
-          <ol className="space-y-1.5 text-xs">
-            {b.sources.map((s, i) => (
-              <li key={s.url} className="flex gap-2">
-                <span className="text-muted-foreground">{i + 1}.</span>
-                <a href={s.url} target="_blank" rel="noreferrer" className="flex min-w-0 flex-1 items-center gap-1.5 hover:underline">
-                  <span className="truncate">{s.title}</span>
-                  <span className="shrink-0 text-muted-foreground">{hostname(s.url)}</span>
-                  <ExternalLink className="size-3 shrink-0 text-muted-foreground" />
+          <ol className="list-decimal space-y-0.5 pl-4 text-muted-foreground marker:text-muted-foreground/60">
+            {b.sources.map((s) => (
+              <li key={s.url}>
+                <a href={s.url} target="_blank" rel="noreferrer" title={s.title} className="hover:text-foreground">
+                  {hostname(s.url)}
                 </a>
               </li>
             ))}
@@ -180,51 +207,65 @@ function BriefView({ prospect: p, onAddRecipient, onNote }: { prospect: Prospect
   )
 }
 
-function RecipientCard({ r, added, onAdd }: { r: Recipient; added: boolean; onAdd: () => void }) {
-  const confidence = { high: 'High confidence', medium: 'Medium confidence', low: 'Guessed' }[r.confidence]
+// One suggested change as a single line: removed words struck through, new ones highlighted.
+function ChangeLine({ pr }: { pr: Proposal }) {
+  const done = pr.state !== 'pending'
   return (
-    <Card size="sm" className="gap-1 py-2.5">
-      <CardContent className="flex items-start gap-3 text-sm">
-        <div className="min-w-0 flex-1">
-          <div className="font-medium">{r.name}</div>
-          {r.role && <div className="line-clamp-2 text-xs text-muted-foreground">{r.role}</div>}
-          {r.email && <div className="mt-0.5 truncate text-xs">{r.email}</div>}
-          <div className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
-            <Badge variant={r.confidence === 'low' ? 'destructive' : r.confidence === 'high' ? 'secondary' : 'outline'} className="font-normal">
-              {confidence}
-            </Badge>
-            <Link2 className="size-3 shrink-0" />
-            <span className="truncate" title={r.source}>
-              {r.source}
-            </span>
-          </div>
-        </div>
-        {r.email ? (
-          <Button variant={added ? 'ghost' : 'outline'} size="sm" onClick={onAdd} disabled={added} className={cn(added && 'text-success')}>
-            {added ? <Check /> : <UserPlus />}
-            {added ? 'Added' : 'Add'}
-          </Button>
-        ) : (
-          <span className="pt-1 text-xs text-muted-foreground">No email</span>
-        )}
-      </CardContent>
-    </Card>
+    <div className={cn('leading-relaxed', done && 'opacity-50')} title={pr.reason}>
+      <span className="text-muted-foreground line-through">{plainText(pr.old)}</span> → <span className="text-mark-text">{plainText(pr.new)}</span>
+    </div>
   )
 }
 
-function ChatView({ prospect: p, onProposal, onRevertProposal: onRevert, onSend, onNewChat, onSelectChat, onDeleteChat }: Props) {
-  const agent = useAgentName()
+function Proposals({ m, nextId, onProposal, onAll, onRevert }: { m: ChatMsg; nextId?: string; onProposal: Props['onProposal']; onAll: Props['onProposalsAll']; onRevert: Props['onRevertProposal'] }) {
+  const list = m.proposals ?? []
+  const pending = list.filter((x) => x.state === 'pending')
+  const next = pending.find((x) => x.id === nextId) ?? pending[0]
+  return (
+    <div className="space-y-1.5">
+      {list.map((pr) => (
+        <div key={pr.id} className="flex items-baseline gap-2">
+          <div className="min-w-0 flex-1">
+            <ChangeLine pr={pr} />
+          </div>
+          {pr.state !== 'pending' && (
+            <Quiet onClick={() => onRevert(m.id, pr.id)} className="shrink-0 text-xs">
+              {pr.state === 'accepted' ? 'applied · undo' : 'rejected · undo'}
+            </Quiet>
+          )}
+        </div>
+      ))}
+      {next && (
+        <div className="flex flex-wrap gap-x-3.5 gap-y-1 pt-0.5">
+          <Quiet onClick={() => onProposal(m.id, next.id, true)} className="text-mark-text hover:text-mark-text">
+            Accept {next.id === nextId && <Shortcut keys="⌘⇧↵" className="ml-0.5" />}
+          </Quiet>
+          <Quiet onClick={() => onProposal(m.id, next.id, false)}>
+            Reject {next.id === nextId && <Shortcut keys="⌘⇧⌫" className="ml-0.5" />}
+          </Quiet>
+          {pending.length > 1 && (
+            <>
+              <Quiet onClick={() => onAll(m.id, true)}>Accept all</Quiet>
+              <Quiet onClick={() => onAll(m.id, false)}>Reject all</Quiet>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ChatView({ prospect: p, onProposal, onProposalsAll, onRevertProposal, onSend, onStop, quote, onClearQuote }: Props) {
   const [draft, setDraft] = useState('')
   const endRef = useRef<HTMLDivElement>(null)
   const thread = activeChat(p)
-  const threads = p.chats.filter((c) => !c.deletedAt)
   const messages = thread?.messages ?? []
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages.length, messages.at(-1)?.text.length, thread?.id])
   // The suggestion ⌘⇧↵ / ⌘⇧⌫ act on: the first one still pending in this chat.
   const nextId = messages.flatMap((m) => m.proposals ?? []).find((x) => x.state === 'pending')?.id
-  const ready = !!p.originalBody
+  const ready = hasEmail(p)
   const replying = messages.some((m) => m.pending)
 
   const send = () => {
@@ -235,145 +276,68 @@ function ChatView({ prospect: p, onProposal, onRevertProposal: onRevert, onSend,
 
   return (
     <>
-      {ready && (
-        <div className="flex shrink-0 items-center gap-1 border-b px-3 py-2">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="sm" className="min-w-0 flex-1 justify-start" disabled={!threads.length}>
-                <MessageSquare />
-                <span className="truncate">{thread?.title ?? 'No chats yet'}</span>
-                {threads.length > 1 && <span className="text-muted-foreground">{threads.length}</span>}
-                <ChevronsUpDown className="ml-auto text-muted-foreground" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="w-64">
-              <DropdownMenuRadioGroup value={thread?.id} onValueChange={onSelectChat}>
-                {[...threads].reverse().map((c) => (
-                  <DropdownMenuRadioItem key={c.id} value={c.id}>
-                    <span className="truncate">{c.title}</span>
-                  </DropdownMenuRadioItem>
-                ))}
-              </DropdownMenuRadioGroup>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onSelect={onNewChat}>
-                <MessageSquarePlus /> New chat
-              </DropdownMenuItem>
-              {thread && (
-                <DropdownMenuItem variant="destructive" onSelect={() => onDeleteChat(thread.id)}>
-                  <Trash2 /> Delete this chat
-                </DropdownMenuItem>
-              )}
-            </DropdownMenuContent>
-          </DropdownMenu>
-          <Hint label="New chat">
-            <Button variant="ghost" size="icon-sm" onClick={onNewChat}>
-              <MessageSquarePlus />
-            </Button>
-          </Hint>
-        </div>
-      )}
       <ScrollArea className="min-h-0 flex-1 [&_[data-slot=scroll-area-viewport]>div]:block!">
-        <div className="space-y-4 p-4 text-sm">
-          {!ready && messages.length === 0 && <p className="text-muted-foreground">You can chat with {agent} about {p.company} once its draft is ready.</p>}
+        <div className="space-y-5 px-6 py-4 leading-relaxed">
+          {!ready && <p className="text-muted-foreground">You can chat with the AI about {p.company} once it’s been researched.</p>}
           {ready && messages.length === 0 && (
             <div className="text-muted-foreground">
-              <Sparkles className="mb-2 size-4" />
-              Ask {agent} to change the email. Try:
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {['Make it shorter', 'Stronger opening line', 'More casual'].map((s) => (
-                  <Button key={s} variant="outline" size="xs" onClick={() => onSend(s)}>
-                    {s}
-                  </Button>
-                ))}
-              </div>
+              {p.body.trim() ? 'Ask the AI to change the email, check something, or look something up.' : `Ask the AI about ${p.company} or what the research found.`}
+              {p.body.trim() && (
+                <div className="mt-2 flex flex-wrap gap-x-3.5 gap-y-1">
+                  {['Make it shorter', 'Stronger opening line', 'More casual'].map((s) => (
+                    <Quiet key={s} onClick={() => onSend(s)} className="text-foreground/80">
+                      {s}
+                    </Quiet>
+                  ))}
+                </div>
+              )}
             </div>
           )}
           {messages.map((m) =>
             m.role === 'user' ? (
-              <div key={m.id} className="ml-auto w-fit max-w-[85%] rounded-lg bg-primary px-3 py-2 text-primary-foreground">
+              <div key={m.id} className="ml-auto w-fit max-w-[85%] text-right whitespace-pre-wrap">
+                {m.quote && <div className="mb-0.5 line-clamp-2 text-xs text-muted-foreground">“{m.quote}”</div>}
                 {m.text}
               </div>
             ) : (
-              <div key={m.id} className="space-y-2">
-                {m.pending && !m.text ? (
+              <div key={m.id} className="space-y-2 text-foreground/90">
+                {m.pending && m.step && (
+                  <p className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <Loader2 className="size-3 shrink-0 animate-spin" /> <span className="truncate">{m.step}</span>
+                  </p>
+                )}
+                {m.pending && !m.text && !m.step ? (
                   <p className="flex items-center gap-2 text-muted-foreground">
                     <Loader2 className="size-3.5 animate-spin" /> Thinking…
                   </p>
                 ) : m.error ? (
-                  <p className="flex items-start gap-2 text-destructive">
-                    <CircleAlert className="mt-0.5 size-3.5 shrink-0" /> {m.text}
-                  </p>
+                  <p className="text-destructive">{m.text}</p>
                 ) : (
-                  <div className="chat-md leading-relaxed">
-                    <Markdown
-                      components={{
-                        a: ({ href, children }) => (
-                          <a href={href} target="_blank" rel="noreferrer">
-                            {children}
-                          </a>
-                        ),
-                      }}
-                    >
-                      {m.text}
-                    </Markdown>
-                  </div>
-                )}
-                {m.comments && m.comments.length > 0 && (
-                  <div className="grid gap-1 rounded-lg border px-3 py-2">
-                    <div className="text-xs text-muted-foreground">Pinned to the email</div>
-                    {m.comments.map((c, i) => (
-                      <div key={i} className="flex items-start gap-2 text-xs/relaxed">
-                        {c.kind === 'verify' ? (
-                          <CircleAlert className="mt-0.5 size-3.5 shrink-0 text-mark" aria-label="Check this" />
-                        ) : (
-                          <MessageSquareText className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-label="Note" />
-                        )}
-                        <span>
-                          <span className="text-muted-foreground">“{c.quote}”</span> {c.comment}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {m.proposals?.map((pr, i) => {
-                  const isNext = pr.id === nextId
-                  return (
-                    <Card key={pr.id} size="sm" className={cn('gap-0 py-0', isNext && 'ring-2 ring-mark', pr.state !== 'pending' && 'opacity-70')}>
-                      <CardHeader className="flex flex-row items-center gap-2 border-b py-2!">
-                        <Sparkles className="size-3.5 text-muted-foreground" />
-                        <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{pr.reason}</span>
-                        <span className="text-xs text-muted-foreground">
-                          {i + 1}/{m.proposals!.length}
-                        </span>
-                      </CardHeader>
-                      <CardContent className="py-2.5 text-sm leading-relaxed">
-                        <DiffText a={pr.old} b={pr.new} />
-                      </CardContent>
-                      <CardFooter className="justify-end gap-1 border-t py-1.5!">
-                        {pr.state === 'pending' ? (
-                          <>
-                            <Button variant="ghost" size="sm" onClick={() => onProposal(m.id, pr.id, false)}>
-                              <X /> Reject {isNext && <ButtonKeys keys="⌘ ⇧ ⌫" />}
-                            </Button>
-                            <Button size="sm" onClick={() => onProposal(m.id, pr.id, true)}>
-                              <Check /> Accept {isNext && <ButtonKeys keys="⌘ ⇧ ↵" primary />}
-                            </Button>
-                          </>
-                        ) : (
-                          <>
-                            <span className={cn('mr-auto flex items-center gap-1 text-xs', pr.state === 'accepted' ? 'text-success' : 'text-muted-foreground')}>
-                              {pr.state === 'accepted' ? <Check className="size-3.5" /> : <X className="size-3.5" />}
-                              {pr.state === 'accepted' ? 'Applied' : 'Rejected'}
-                            </span>
-                            <Button variant="ghost" size="sm" onClick={() => onRevert(m.id, pr.id)}>
-                              <Undo2 /> Undo
-                            </Button>
-                          </>
-                        )}
-                      </CardFooter>
-                    </Card>
+                  m.text && (
+                    <div className="chat-md">
+                      <Markdown
+                        components={{
+                          a: ({ href, children }) => (
+                            <a href={href} target="_blank" rel="noreferrer">
+                              {children}
+                            </a>
+                          ),
+                        }}
+                      >
+                        {m.text}
+                      </Markdown>
+                    </div>
                   )
-                })}
+                )}
+                {m.stopped && <p className="text-xs text-muted-foreground">Stopped</p>}
+                {m.comments && m.comments.length > 0 && (
+                  <p className="text-xs text-muted-foreground">
+                    Pinned {m.comments.length === 1 ? 'a comment' : `${m.comments.length} comments`} to the email
+                  </p>
+                )}
+                {m.proposals && m.proposals.length > 0 && (
+                  <Proposals m={m} nextId={nextId} onProposal={onProposal} onAll={onProposalsAll} onRevert={onRevertProposal} />
+                )}
               </div>
             ),
           )}
@@ -381,27 +345,39 @@ function ChatView({ prospect: p, onProposal, onRevertProposal: onRevert, onSend,
         </div>
       </ScrollArea>
 
-      <div className="border-t p-3">
-        <div className="relative">
-          <Textarea
-            id="chat-input"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault()
-                send()
-              }
-            }}
-            disabled={!ready}
-            placeholder={ready ? `Tell ${agent} what to change in the ${p.company} email…` : 'Waiting for the draft…'}
-            className="max-h-40 min-h-16 resize-none bg-background pr-10"
-          />
-          <Button size="icon-xs" onClick={send} disabled={!draft.trim() || !ready || replying} className="absolute right-2 bottom-2" title="Send (↵)">
-            <ArrowUp />
-          </Button>
-        </div>
-        <p className="mt-1.5 text-xs text-muted-foreground">{replying ? `${agent} is replying…` : `${agent} sees the email, the brief and your voice.`}</p>
+      <div className="px-6 pt-2 pb-5">
+        {quote && (
+          <div className="mb-2 flex items-start gap-2 text-xs text-muted-foreground">
+            <span className="line-clamp-2 min-w-0 flex-1">“{quote}”</span>
+            <button onClick={onClearQuote} className="shrink-0 opacity-60 hover:opacity-100" title="Remove">
+              <X className="size-3.5" />
+            </button>
+          </div>
+        )}
+        <textarea
+          id="chat-input"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault()
+              send()
+            }
+          }}
+          disabled={!ready}
+          rows={2}
+          placeholder={!ready ? 'Waiting for the research…' : quote ? 'Ask about the highlighted part…' : 'Ask or tell the AI what to change…'}
+          className="field-sizing-content max-h-40 min-h-16 w-full resize-none rounded-xl bg-muted/60 px-3.5 py-3 outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
+        />
+        <p className="mt-1.5 text-xs text-muted-foreground/70">
+          {replying ? (
+            <button onClick={onStop} className="hover:text-foreground">
+              Stop <span className="text-muted-foreground/60">esc</span>
+            </button>
+          ) : (
+            '↵ send · ⇧↵ new line · ⌘N new chat'
+          )}
+        </p>
       </div>
     </>
   )

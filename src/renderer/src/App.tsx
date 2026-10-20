@@ -22,6 +22,8 @@ import {
   Redo2,
   RefreshCw,
   Settings,
+  Slash,
+  Square,
   Sun,
   Trash2,
   Undo2,
@@ -29,19 +31,24 @@ import {
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
 import { usePanelRef } from 'react-resizable-panels'
 import { toast } from 'sonner'
-import { AgentProvider, agentName } from './agent'
+import { AgentProvider } from './agent'
 import { CommandPalette, ShortcutsDialog, type PaletteCommand } from './components/CommandPalette'
-import { AddCompaniesDialog } from './components/AddCompaniesDialog'
+import { AddCompaniesPage } from './components/AddCompaniesPage'
+import { Shortcut } from './components/hint'
+import { TopBar } from './components/TopBar'
 import { Editor } from './components/Editor'
 import { activeChat, RightPanel, type Tab } from './components/RightPanel'
 import type { TrashItem } from './components/TrashView'
 import { SettingsSidebar, type SettingsPage } from './components/settings/SettingsSidebar'
 import { SettingsView } from './components/settings/SettingsView'
-import { AppSidebar, inFilter, type Filter } from './components/Sidebar'
+import { AppSidebar, dot, inFilter, type Filter } from './components/Sidebar'
 import { statusStyle } from './components/status'
 import { useBreakpoint } from './layout'
 import {
   MAX_VOICE_EXAMPLES,
+  hasEmail,
+  snippetsFor,
+  statusAfter,
   type Attachment,
   type Campaign,
   type ChatMsg,
@@ -49,6 +56,7 @@ import {
   type Folder,
   type ChatThread,
   type Prospect,
+  type Snippet,
   type Version,
   type Voice,
   type VoiceExample,
@@ -65,12 +73,12 @@ const MAX_CONCURRENT = 3
 const UNDO_GRACE_MS = 5000
 type Theme = 'dark' | 'light'
 
-const needsReview = (p: Prospect) => p.status === 'drafted' || p.status === 'edited'
+// What save-and-next and N move on to: drafts to review, and research-only emails still to write.
+const needsReview = (p: Prospect) => (inFilter.review(p) && p.status !== 'failed') || inFilter.write(p)
 // Claude's comments, stamped for storing on a prospect.
 const stamp = (comments: EmailComment[], by: Comment['by']): Comment[] => comments.map((c) => ({ ...c, id: crypto.randomUUID(), by, at: Date.now() }))
 
 const hasText = (p: Prospect | undefined, text: string) => !!p && !!text && (p.subject.includes(text) || p.body.includes(text))
-const statusAfter = (p: Prospect, body: string): Prospect['status'] => (p.status === 'saved' ? 'saved' : body !== p.originalBody ? 'edited' : 'drafted')
 
 interface Toast {
   text: string
@@ -103,8 +111,9 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
   const [folders, setFolders] = useState(saved.folders)
   const [campaigns, setCampaigns] = useState(saved.campaigns)
   const [voices, setVoices] = useState(saved.voices)
-  // The email workspace, or Settings (which swaps in its own sidebar).
-  const [view, setView] = useState<'email' | 'settings'>('email')
+  const [snippets, setSnippets] = useState<Snippet[]>(saved.snippets ?? [])
+  // The email workspace, adding organisations, or Settings (which swaps in its own sidebar).
+  const [view, setView] = useState<'email' | 'add' | 'settings'>('email')
   const [settingsPage, setSettingsPage] = useState<SettingsPage>({ kind: 'mailbox' })
   const [campaignId, setCampaignId] = useState(saved.campaignId)
   const [selectedId, setSelectedId] = useState(saved.selectedId)
@@ -116,20 +125,24 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
 
   // Persist to disk (Electron only) whenever the saved state changes.
   useEffect(() => {
-    persist({ version: 1, prospects, folders, campaigns, voices, campaignId, selectedId, onboarded, emailStyle })
-  }, [prospects, folders, campaigns, voices, campaignId, selectedId, onboarded, emailStyle])
+    persist({ version: 1, prospects, folders, campaigns, voices, campaignId, selectedId, onboarded, emailStyle, snippets })
+  }, [prospects, folders, campaigns, voices, campaignId, selectedId, onboarded, emailStyle, snippets])
   const [tab, setTab] = useState<Tab>('chat')
-  const [filter, setFilter] = useState<Filter>('all')
+  // Most of the time you're working through what needs review.
+  const [filter, setFilter] = useState<Filter>('review')
+  // The campaign switcher (⌘O) and the History menu (⌘⇧H).
+  const [switcherOpen, setSwitcherOpen] = useState(false)
+  const [historyOpen, setHistoryOpen] = useState(false)
   const [showDiff, setShowDiff] = useState(false)
-  const [adding, setAdding] = useState(false)
+  // What's typed on the Add page, kept while you look elsewhere.
+  const [addText, setAddText] = useState('')
+  const openAdd = () => setView('add')
   const [palette, setPalette] = useState(false)
   const [help, setHelp] = useState(false)
   const [theme, setTheme] = useState<Theme>(loadTheme)
   const [regeneratingId, setRegeneratingId] = useState<string | null>(null)
   // Mailbox & API key settings (secrets stay in the main process).
   const [settings, setSettings] = useState<PublicSettings | null>(null)
-  // Name of the chosen AI backend, used in copy throughout the app.
-  const agent = agentName(settings?.aiProvider)
   const openSettings = (page: SettingsPage = settingsPage) => {
     setSettingsPage(page)
     setView('settings')
@@ -169,9 +182,11 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
   const inCampaign = prospects.filter((p) => p.campaignId === campaign.id && !p.deletedAt)
   // Undefined when the campaign is empty (e.g. just created).
   const selected = inCampaign.find((p) => p.id === selectedId)
-  const shown = inCampaign.filter((p) => inFilter[filter](p.status))
+  const shown = inCampaign.filter(inFilter[filter])
   const update = (id: string, fn: (p: Prospect) => Prospect) => setProspects((ps) => ps.map((p) => (p.id === id ? fn(p) : p)))
-  const overlayOpen = adding || palette || help || (!rightDocks && rightOpen)
+  // The side column is an overlay (a sheet) only on narrower windows, and only while it's showing.
+  const sheetOpen = !rightDocks && rightOpen && !!selected && view === 'email'
+  const overlayOpen = palette || help || switcherOpen || historyOpen || sheetOpen
   // Latest state for callbacks that run later (timers, undo closures).
   const prospectsRef = useRef(prospects)
   prospectsRef.current = prospects
@@ -233,6 +248,15 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     }
   }
 
+  // Running requests the user can stop, by prospect: research, and chat replies.
+  const researchJobs = useRef(new Map<string, string>())
+  // Chat replies are keyed by chat thread, since each thread can have its own reply running.
+  const chatJobs = useRef(new Map<string, string>())
+  const stopJob = (jobs: Map<string, string>, pid: string) => {
+    const jobId = jobs.get(pid)
+    if (jobId) void window.api?.claude.cancel(jobId)
+  }
+
   // Research runner: pulls from the queue so at most MAX_CONCURRENT run at once.
   const researching = useRef(new Set<string>())
   const research = async (p: Prospect) => {
@@ -240,25 +264,29 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     researching.current.add(pid)
     update(pid, (q) => ({ ...q, status: 'researching', progress: [], error: undefined }))
     const jobId = crypto.randomUUID()
+    researchJobs.current.set(pid, jobId)
     jobs.current.set(jobId, (e) => e.kind === 'step' && update(pid, (q) => ({ ...q, progress: [...q.progress, e.text] })))
+    const researchOnly = !!campaignsRef.current.find((c) => c.id === p.campaignId)?.researchOnly
     const res = window.api
-      ? await window.api.claude.research({ jobId, website: p.domain || undefined, ...claudeContext(p) })
+      ? await window.api.claude.research({ jobId, website: p.domain || undefined, ...claudeContext(p), draft: !researchOnly })
       : ({ ok: false, error: 'Research runs in the Inroad desktop app.' } as const)
     jobs.current.delete(jobId)
+    researchJobs.current.delete(pid)
     researching.current.delete(pid)
-    if (!res.ok) return update(pid, (q) => ({ ...q, status: 'failed', error: res.error }))
-    const { research, draft } = res.value
+    if (!res.ok) return update(pid, (q) => ({ ...q, status: 'failed', error: res.error === 'Stopped.' ? 'You stopped the research.' : res.error }))
+    const { research, brief, draft } = res.value
+    if (!draft) return update(pid, (q) => ({ ...q, status: 'researched', research, brief }))
     const md = normalizeMarkdown(draft.body)
     update(pid, (q) => ({
       ...q,
       status: 'drafted',
       research,
-      brief: draft.brief,
+      brief,
       subject: draft.subject,
       body: md,
       originalBody: md,
       to: draft.to ? [draft.to] : [],
-      versions: [...q.versions, { id: crypto.randomUUID(), label: `${agent}’s draft`, by: 'claude', at: Date.now(), markdown: md }],
+      versions: [...q.versions, { id: crypto.randomUUID(), label: 'AI draft', by: 'claude', at: Date.now(), markdown: md }],
       comments: [...(q.comments ?? []), ...stamp(draft.comments, 'draft')],
     }))
   }
@@ -393,7 +421,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
   // New campaigns go in the open campaign's folder unless told otherwise.
   const createCampaign = (folderId = campaign.folderId) => {
     const id = crypto.randomUUID()
-    setCampaigns((cs) => [...cs, { id, folderId, name: '', notes: '', attachments: [], voiceId: campaign.voiceId }])
+    setCampaigns((cs) => [...cs, { id, folderId, name: '', notes: '', attachments: [], voiceId: campaign.voiceId, researchOnly: true }])
     setCampaignId(id)
     setView('email')
     return id
@@ -581,6 +609,30 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     record(`Removed ${file.name}`, undefined, () => setAttachments(campaignId, (as) => [...as.slice(0, i), file, ...as.slice(i)]), apply)
   }
 
+  // ---- Snippets: reusable text, inserted in the email by typing "/" ----
+  const setSnippetDeleted = (id: string, at?: number) => setSnippets((ss) => ss.map((s) => (s.id === id ? { ...s, deletedAt: at } : s)))
+  const updateSnippet = (id: string, patch: Partial<Snippet>) => setSnippets((ss) => ss.map((s) => (s.id === id ? { ...s, ...patch } : s)))
+
+  const addSnippet = (snippet: Omit<Snippet, 'id'>, toast?: string) => {
+    const s: Snippet = { id: crypto.randomUUID(), ...snippet }
+    const apply = () => setSnippets((ss) => [...ss.filter((x) => x.id !== s.id), s])
+    apply()
+    record(s.name ? `Saved the “${s.name}” snippet` : 'Created a snippet', undefined, () => setSnippets((ss) => ss.filter((x) => x.id !== s.id)), apply, toast)
+    return s.id
+  }
+
+  const deleteSnippet = (id: string) => {
+    const s = snippets.find((x) => x.id === id)
+    if (s) softDelete(`the “${s.name || 'Untitled'}” snippet`, (at) => setSnippetDeleted(id, at))
+  }
+
+  const scopeLabel = (scope: Snippet['scope']) =>
+    scope.kind === 'global'
+      ? 'Everywhere'
+      : scope.kind === 'folder'
+        ? folders.find((f) => f.id === scope.id)?.name || 'Untitled folder'
+        : campaigns.find((c) => c.id === scope.id)?.name || 'Untitled campaign'
+
   const deleteVersion = (v: Version) => {
     if (!selected) return
     const pid = selected.id
@@ -591,7 +643,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
   const selectChat = (chatId: string) => selected && update(selected.id, (p) => ({ ...p, activeChatId: chatId }))
 
   const newChat = () => {
-    if (!selected?.originalBody) return
+    if (!selected || !hasEmail(selected)) return
     const thread: ChatThread = { id: crypto.randomUUID(), title: 'New chat', createdAt: Date.now(), messages: [] }
     update(selected.id, (p) => ({ ...p, chats: [...p.chats, thread], activeChatId: thread.id }))
     setTab('chat')
@@ -647,11 +699,13 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
   const mailReady = !!settings?.mail && !!settings.hasMailPassword
 
   const save = () => {
-    if (!selected?.originalBody) return
+    if (!selected || !hasEmail(selected)) return
+    if (!selected.body.trim()) return notify({ text: 'Write the email first, or press ⌘R to have the AI draft it' })
     if (!mailReady)
       return notify({ text: 'Connect your mailbox to save drafts', action: { label: 'Open settings', run: () => openSettings({ kind: 'mailbox' }) } })
     const { id: pid, status: prev, company, draftRef: prevRef } = selected
-    const edited = selected.body !== selected.originalBody
+    // Only edits to an AI draft teach the voice; an email written from scratch has nothing to compare.
+    const edited = !!selected.originalBody && selected.body !== selected.originalBody
     const versionId = crypto.randomUUID()
     // This save's trip to the mailbox, so undo knows whether to cancel it or delete the draft.
     const sync: { committed: boolean; ref?: DraftRef } = { committed: false }
@@ -737,7 +791,46 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     ;(document.activeElement as HTMLElement | null)?.blur()
   }
 
+  // Research-only campaigns: write the email for one organisation from its research.
+  const writeDraft = async () => {
+    if (!selected || !hasEmail(selected) || selected.originalBody || regeneratingId || !window.api) return
+    const p = selected
+    const pid = p.id
+    setRegeneratingId(pid)
+    const res = await window.api.claude.draft({ ...claudeContext(p), research: p.research ?? JSON.stringify(p.brief ?? {}) })
+    setRegeneratingId(null)
+    if (!res.ok) return notify({ text: `Couldn’t write the draft: ${res.error}` })
+    const md = normalizeMarkdown(res.value.body)
+    const before = get(pid)
+    if (!before) return
+    const version: Version = { id: crypto.randomUUID(), label: 'AI draft', by: 'claude', at: Date.now(), markdown: md }
+    // Anything you'd written yourself stays in History.
+    const yours: Version[] = before.body.trim() ? [{ id: crypto.randomUUID(), label: 'Your edits', by: 'you', at: Date.now(), markdown: before.body }] : []
+    const fresh = stamp(res.value.comments, 'draft')
+    const apply = () =>
+      update(pid, (q) => ({
+        ...q,
+        status: q.status === 'saved' ? 'saved' : 'drafted',
+        brief: res.value.brief,
+        subject: res.value.subject,
+        body: md,
+        originalBody: md,
+        to: q.to.length ? q.to : res.value.to ? [res.value.to] : [],
+        versions: [...q.versions.filter((v) => v.id !== version.id && !yours.some((y) => y.id === v.id)), ...yours, version],
+        comments: [...(q.comments ?? []).filter((c) => !fresh.some((f) => f.id === c.id)), ...fresh],
+      }))
+    apply()
+    record(
+      'Wrote draft',
+      pid,
+      () => update(pid, (q) => ({ ...q, ...before, chats: q.chats })),
+      apply,
+      `Wrote a draft for ${p.company}`,
+    )
+  }
+
   const regenerate = async () => {
+    if (selected && hasEmail(selected) && !selected.originalBody) return writeDraft()
     if (!selected?.originalBody || regeneratingId || !window.api) return
     const p = selected
     const pid = p.id
@@ -816,20 +909,20 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     }))
 
   // Suggestions quote plain text from either the subject or the body.
-  const swapText = (pid: string, from: string, to: string) =>
-    update(pid, (p) => {
-      if (p.subject.includes(from)) return { ...p, subject: p.subject.replace(from, () => to) }
-      // Re-normalise so the stored text matches what the editor would write.
-      const body = normalizeMarkdown(p.body.replace(from, () => to))
-      return { ...p, body, status: statusAfter(p, body) }
-    })
+  const swapIn = (p: Prospect, from: string, to: string): Prospect => {
+    if (p.subject.includes(from)) return { ...p, subject: p.subject.replace(from, () => to) }
+    // Re-normalise so the stored text matches what the editor would write.
+    const body = normalizeMarkdown(p.body.replace(from, () => to))
+    return { ...p, body, status: statusAfter(p, body) }
+  }
+  const swapText = (pid: string, from: string, to: string) => update(pid, (p) => swapIn(p, from, to))
 
   const resolveProposal = (msgId: string, propId: string, accept: boolean) => {
     if (!selected) return
     const pid = selected.id
     const prop = findProposal(selected, msgId, propId)
     if (!prop) return
-    if (accept && !hasText(selected, prop.old)) return notify({ text: `Couldn't apply: that text has changed since ${agent} suggested it` })
+    if (accept && !hasText(selected, prop.old)) return notify({ text: 'Couldn’t apply: that text has changed since the AI suggested it' })
     const apply = () => {
       if (accept) swapText(pid, prop.old, prop.new)
       setProposalState(pid, msgId, propId, accept ? 'accepted' : 'rejected')
@@ -853,10 +946,44 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     if (!selected) return
     for (const m of activeChat(selected)?.messages ?? [])
       for (const pr of m.proposals ?? [])
-        if (pr.state === 'pending') {
-          setTab('chat')
-          return resolveProposal(m.id, pr.id, accept)
-        }
+        if (pr.state === 'pending') return resolveProposal(m.id, pr.id, accept)
+  }
+
+  // Accept all / Reject all on one reply's suggestions, as a single undo step.
+  // Suggestions are applied one after another, each checked against the email
+  // as the earlier ones left it; any whose text is gone by then stay pending.
+  const resolveAllProposals = (msgId: string, accept: boolean) => {
+    const start = selected && get(selected.id)
+    if (!start) return
+    const pid = start.id
+    const msg = start.chats.flatMap((c) => c.messages).find((m) => m.id === msgId)
+    const pending = (msg?.proposals ?? []).filter((x) => x.state === 'pending')
+    let after = start
+    const done = pending.filter((x) => {
+      if (!accept) return true
+      if (!hasText(after, x.old)) return false
+      after = swapIn(after, x.old, x.new)
+      return true
+    })
+    if (!done.length) return notify({ text: 'Couldn’t apply: that text has changed since the AI suggested it' })
+    const state = accept ? 'accepted' : 'rejected'
+    const email = { subject: after.subject, body: after.body, status: after.status }
+    const apply = () => {
+      if (accept) update(pid, (p) => ({ ...p, ...email }))
+      done.forEach((x) => setProposalState(pid, msgId, x.id, state))
+    }
+    apply()
+    const skipped = pending.length - done.length
+    record(
+      `${accept ? 'Accepted' : 'Rejected'} ${done.length} suggestion${done.length === 1 ? '' : 's'}`,
+      pid,
+      () => {
+        if (accept) update(pid, (p) => ({ ...p, subject: start.subject, body: start.body, status: start.status }))
+        done.forEach((x) => setProposalState(pid, msgId, x.id, 'pending'))
+      },
+      apply,
+      skipped ? `Accepted ${done.length}; ${skipped} no longer matched the email, so they’re still pending` : undefined,
+    )
   }
 
   const setRecipients = (to: string[]) => {
@@ -883,7 +1010,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
   }
 
   const editBody = () => {
-    if (!selected?.originalBody) return
+    if (!selected || !hasEmail(selected)) return
     setShowDiff(false)
     focusLater('email-body')
   }
@@ -924,9 +1051,27 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     )
   }
 
+  // ⌘/: with text selected in the email, ask the AI about it; otherwise jump
+  // between the email and the chat box.
   const toggleChatFocus = () => {
-    if (document.activeElement?.id === 'chat-input' && selected?.originalBody) editBody()
+    const editor = currentEditor()
+    const sel = editor?.state.selection
+    if (editor?.isFocused && sel && !sel.empty) return askAbout(editor.state.doc.textBetween(sel.from, sel.to, '\n'))
+    if (document.activeElement?.id === 'chat-input' && selected && hasEmail(selected)) editBody()
     else openChat()
+  }
+
+  // ⌘N: a new chat from the chat panel, otherwise add organisations.
+  const newThing = (el: HTMLElement) => {
+    if (el.closest?.('#side-panel') && selected && hasEmail(selected)) newChat()
+    else openAdd()
+  }
+
+  const replying = !!selected && !!activeChat(selected)?.messages.some((m) => m.pending)
+  // Stops the reply being written in the chat that's showing.
+  const stopReply = () => {
+    const thread = selected && activeChat(selected)
+    if (thread) stopJob(chatJobs.current, thread.id)
   }
 
   const goToNextReview = () => {
@@ -951,8 +1096,23 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
         setPalette((v) => !v)
         return
       }
+      // ⌘O: switch campaign or folder, from anywhere in the email view. The
+      // switcher hangs off the sidebar, so bring that back first.
+      if (mod && e.key.toLowerCase() === 'o' && view !== 'settings') {
+        e.preventDefault()
+        if (!switcherOpen) setLeftOpen(true)
+        setSwitcherOpen((v) => !v)
+        return
+      }
+      // ⌘N in the chat starts a new chat, even when the chat is a sheet over the email.
+      if (mod && e.key.toLowerCase() === 'n' && !e.shiftKey && el.closest?.('#side-panel') && selected && hasEmail(selected)) {
+        e.preventDefault()
+        return newChat()
+      }
       // Dialogs and sheets handle their own Escape; don't act behind them.
       if (overlayOpen) return
+      // Esc stops a reply that's being written, before anything else it does.
+      if (e.key === 'Escape' && replying && view === 'email') return stopReply()
       if (e.key === 'Escape' && typing) return el.blur()
 
       if (mod && e.key.toLowerCase() === 'z') {
@@ -971,6 +1131,15 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
         return
       }
 
+      // Adding organisations: Esc goes back to the email; ⌘, still opens Settings.
+      if (view === 'add') {
+        if (mod && e.key === ',') {
+          e.preventDefault()
+          openSettings()
+        } else if (e.key === 'Escape' && !typing) setView('email')
+        return
+      }
+
       // Modifier shortcuts work everywhere, including mid-typing, since most of
       // the time focus is in the email or the chat box.
       if (mod) {
@@ -980,15 +1149,17 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
           fn()
         }
         if (key === ',') return run(() => openSettings())
+        if (key === 'n' && !e.shiftKey) return run(() => newThing(el))
         if (key === 'enter') return run(e.shiftKey ? () => resolveNextProposal(true) : save)
         if (key === 'backspace' && e.shiftKey) return run(() => resolveNextProposal(false))
         if (key === '/') return run(toggleChatFocus)
         if (key === 'b' && e.shiftKey) return run(() => togglePanel('brief'))
+        if (key === 'h' && e.shiftKey) return run(() => selected && hasEmail(selected) && setHistoryOpen((v) => !v))
         // ⌘\\ (left sidebar) is handled by shadcn's SidebarProvider.
         if ((key === '\\' || key === '|') && e.shiftKey) return run(() => setRightOpen((v) => !v))
         if (key === ']') return run(() => step(1))
         if (key === '[') return run(() => step(-1))
-        if (key === 'd' && !e.shiftKey) return run(() => setShowDiff((v) => !v))
+        if (key === 'd' && !e.shiftKey) return run(() => selected?.originalBody && setShowDiff((v) => !v))
         if (key === 'r' && !e.shiftKey) return run(regenerate)
       }
       if (typing || mod || e.altKey) return
@@ -999,9 +1170,10 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
         k: () => step(-1),
         ArrowUp: () => step(-1),
         n: goToNextReview,
-        '1': () => setFilter('all'),
-        '2': () => setFilter('review'),
-        '3': () => setFilter('saved'),
+        '1': () => setFilter('review'),
+        '2': () => setFilter('write'),
+        '3': () => setFilter('all'),
+        '4': () => setFilter('saved'),
         e: editBody,
         Enter: editBody,
         t: addTopRecipient,
@@ -1009,7 +1181,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
         '/': openChat,
         a: () => resolveNextProposal(true),
         x: () => resolveNextProposal(false),
-        c: () => setAdding(true),
+        c: () => openAdd(),
         Backspace: () => view === 'email' && selected && deleteProspect(selected.id),
         Delete: () => view === 'email' && selected && deleteProspect(selected.id),
         '?': () => setHelp(true),
@@ -1127,6 +1299,17 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
           purge: () => update(p.id, (q) => ({ ...q, chats: q.chats.filter((x) => x.id !== c.id) })),
         })),
     ),
+    ...snippets
+      .filter((s) => s.deletedAt)
+      .map<TrashEntry>((s) => ({
+        key: `snippet:${s.id}`,
+        kind: 'snippet',
+        label: s.name || 'Untitled snippet',
+        context: scopeLabel(s.scope),
+        deletedAt: s.deletedAt!,
+        set: (at) => setSnippetDeleted(s.id, at),
+        purge: () => setSnippets((ss) => ss.filter((x) => x.id !== s.id)),
+      })),
     ...prospects.flatMap((p) =>
       p.versions
         .filter((v) => v.deletedAt)
@@ -1173,16 +1356,18 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
       id: `go-${p.id}`,
       group: 'Organisations',
       label: p.company,
-      icon: <span className="grid size-4 place-items-center rounded-sm bg-muted text-[10px] font-semibold">{p.company[0]}</span>,
+      icon: <span className={`mx-[5px] size-1.5 shrink-0 rounded-full ${dot(p)}`} />,
       hint: statusStyle[p.status].label,
       run: () => select(p.id),
     })),
     ...(undoTop ? [{ id: 'undo', group: 'Actions' as const, label: `Undo: ${undoTop.label}`, icon: <Undo2 />, shortcut: '⌘Z', run: appUndo }] : []),
     ...(redoTop ? [{ id: 'redo', group: 'Actions' as const, label: `Redo: ${redoTop.label}`, icon: <Redo2 />, shortcut: '⌘⇧Z', run: appRedo }] : []),
     { id: 'save', group: 'Actions', label: 'Save to drafts', icon: <Inbox />, shortcut: '⌘↵', run: save },
-    { id: 'diff', group: 'Actions', label: `Compare with ${agent}’s draft`, icon: <GitCompare />, shortcut: '⌘D', run: () => setShowDiff((v) => !v) },
+    ...(selected?.originalBody
+      ? [{ id: 'diff', group: 'Actions' as const, label: 'Compare with the AI draft', icon: <GitCompare />, shortcut: '⌘D', run: () => setShowDiff((v) => !v) }]
+      : []),
     { id: 'regen', group: 'Actions', label: 'Regenerate draft', icon: <RefreshCw />, shortcut: '⌘R', run: regenerate },
-    { id: 'chat', group: 'Actions', label: `Chat with ${agent}`, icon: <MessageSquare />, shortcut: '⌘/', run: openChat },
+    { id: 'chat', group: 'Actions', label: 'Chat with the AI', icon: <MessageSquare />, shortcut: '⌘/', run: openChat },
     { id: 'brief', group: 'Actions', label: 'Show brief', icon: <FileText />, shortcut: '⌘⇧B', run: () => togglePanel('brief') },
     { id: 'left', group: 'Actions', label: 'Toggle sidebar', icon: <PanelLeft />, shortcut: '⌘\\', run: () => setLeftOpen((v) => !v) },
     {
@@ -1193,7 +1378,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
       shortcut: '⌘⇧\\',
       run: () => setRightOpen((v) => !v),
     },
-    { id: 'add', group: 'Actions', label: 'Add to campaign', icon: <Plus />, shortcut: 'C', run: () => setAdding(true) },
+    { id: 'add', group: 'Actions', label: 'Add to campaign', icon: <Plus />, shortcut: '⌘N', run: () => openAdd() },
     {
       id: 'theme',
       group: 'Actions',
@@ -1204,6 +1389,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     { id: 'help', group: 'Actions', label: 'Keyboard shortcuts', icon: <Keyboard />, shortcut: '?', run: () => setHelp(true) },
     { id: 'settings', group: 'Actions', label: 'Settings', icon: <Settings />, shortcut: '⌘,', run: () => openSettings() },
     { id: 'new-chat', group: 'Actions', label: 'New chat', icon: <MessageSquarePlus />, run: newChat },
+    ...(replying && selected ? [{ id: 'stop', group: 'Actions' as const, label: 'Stop the reply', icon: <Square />, run: stopReply }] : []),
     ...(selected && activeChat(selected)
       ? [
           {
@@ -1244,6 +1430,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
         run: () => setVoice(v.id),
       })),
     { id: 'voices', group: 'Campaigns & voices', label: 'Edit voices', icon: <PenLine />, run: editVoices },
+    { id: 'snippets', group: 'Campaigns & voices', label: 'Edit snippets', icon: <Slash />, run: () => openSettings({ kind: 'snippets' }) },
     ...aliveCampaigns
       .filter((c) => c.id !== campaign.id)
       .map<PaletteCommand>((c) => ({
@@ -1306,15 +1493,29 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     const apply = () => setProspects((ps) => [...ps.filter((p) => !ids.includes(p.id)), ...added])
     apply()
     record(`Added ${added.length} to ${campaign.name}`, undefined, () => setProspects((ps) => ps.filter((p) => !ids.includes(p.id))), apply)
-    setAdding(false)
+    // Show the first one researching. New ones are queued, so only All lists them.
+    select(added[0].id)
+    setFilter('all')
   }
 
   // A suggestion as Claude will see it in the transcript of earlier turns.
   const describe = (m: ChatMsg) =>
     [
+      m.quote ? `[About this part of the email: “${m.quote}”]` : '',
       m.text,
       ...(m.proposals ?? []).map((x) => `[Suggested replacing “${x.old}” with “${x.new}” — ${x.state === 'pending' ? 'not yet decided' : x.state}]`),
-    ].join('\n')
+      m.stopped ? '[The user stopped this reply here]' : '',
+    ]
+      .filter(Boolean)
+      .join('\n')
+
+  // A passage of the email attached to the next chat message (highlight + Ask AI, or ⌘/).
+  const [chatQuote, setChatQuote] = useState<{ pid: string; text: string } | null>(null)
+  const askAbout = (text: string) => {
+    if (!selected || !hasEmail(selected) || !text.trim()) return
+    setChatQuote({ pid: selected.id, text: text.trim() })
+    openChat()
+  }
 
   const sendChat = async (text: string) => {
     if (!selected) return
@@ -1328,7 +1529,9 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     const title = thread.messages.length ? thread.title : text.slice(0, 40)
     const history = thread.messages.filter((m) => !m.error).map((m) => ({ role: m.role, text: describe(m) }))
     const replyId = crypto.randomUUID()
-    const userMsg: ChatMsg = { id: crypto.randomUUID(), role: 'user', text }
+    const quote = chatQuote?.pid === pid ? chatQuote.text : undefined
+    if (quote) setChatQuote(null)
+    const userMsg: ChatMsg = { id: crypto.randomUUID(), role: 'user', text, quote }
     const reply: ChatMsg = { id: replyId, role: 'assistant', text: '', pending: true }
     update(pid, (q) => ({
       ...q,
@@ -1345,7 +1548,8 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     if (!window.api) return setReply((m) => ({ ...m, pending: false, error: true, text: 'Chat runs in the Inroad desktop app.' }))
 
     const jobId = crypto.randomUUID()
-    jobs.current.set(jobId, (e) => e.kind === 'delta' && setReply((m) => ({ ...m, text: m.text + e.text })))
+    jobs.current.set(jobId, (e) => setReply((m) => (e.kind === 'delta' ? { ...m, text: m.text + e.text } : { ...m, step: e.text })))
+    chatJobs.current.set(chatId, jobId)
     const res = await window.api.claude.chat({
       jobId,
       ...claudeContext(p),
@@ -1355,12 +1559,16 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
       comments: (p.comments ?? []).filter((c) => !c.dismissed).map(({ quote, comment, kind }) => ({ quote, comment, kind })),
       history,
       message: text,
+      quote,
     })
     jobs.current.delete(jobId)
-    if (!res.ok) return setReply((m) => ({ ...m, pending: false, error: true, text: res.error }))
+    chatJobs.current.delete(chatId)
+    if (!res.ok) return setReply((m) => ({ ...m, pending: false, step: undefined, error: true, text: res.error }))
     setReply((m) => ({
       ...m,
       pending: false,
+      step: undefined,
+      stopped: res.value.stopped,
       text: res.value.text,
       proposals: res.value.proposals.map((x) => ({ ...x, id: crypto.randomUUID(), state: 'pending' })),
       comments: res.value.comments,
@@ -1394,7 +1602,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
       examples: [...(voice.examples ?? []), ...r.emails.map((final) => ({ id: crypto.randomUUID(), at: Date.now(), final }))],
     })
     setOnboarded(true)
-    setAdding(true)
+    openAdd()
   }
 
   const startFresh = () => {
@@ -1409,6 +1617,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     setCampaignId(fresh.campaignId)
     setSelectedId(fresh.selectedId)
     setFolders(fresh.folders)
+    setSnippets([])
     setOnboarded(false)
     setView('email')
     notify({ text: 'Started fresh' })
@@ -1423,8 +1632,12 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
       onAddRecipient={addRecipient}
       onNote={(note) => update(selected.id, (p) => ({ ...p, note }))}
       onProposal={resolveProposal}
+      onProposalsAll={resolveAllProposals}
       onRevertProposal={revertProposal}
       onSend={sendChat}
+      onStop={stopReply}
+      quote={chatQuote?.pid === selected.id ? chatQuote.text : null}
+      onClearQuote={() => setChatQuote(null)}
       onNewChat={newChat}
       onSelectChat={selectChat}
       onDeleteChat={deleteChat}
@@ -1435,7 +1648,6 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     <Editor
       prospect={selected}
       bodyStyle={emailStyleVars(emailStyle) as CSSProperties}
-      from={settings?.mail?.fromEmail ? `${settings.mail.fromName ? `${settings.mail.fromName} ` : ''}<${settings.mail.fromEmail}>` : ''}
       voiceName={voice.name}
       attachments={campaign.attachments}
       queuePosition={queuePosition}
@@ -1445,32 +1657,57 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
       onRegenerate={regenerate}
       onRestoreVersion={restoreVersion}
       onDeleteVersion={deleteVersion}
+      historyOpen={historyOpen}
+      onHistoryOpenChange={setHistoryOpen}
       onChange={(patch) => (patch.to ? setRecipients(patch.to) : update(selected.id, (p) => ({ ...p, ...patch })))}
       onRetry={(website) => update(selected.id, (p) => ({ ...p, status: 'queued', progress: [], error: undefined, domain: website || p.domain }))}
+      onStopResearch={() => stopJob(researchJobs.current, selected.id)}
       onSave={save}
       panelTab={rightOpen ? tab : null}
-      showPanelButtons={!(rightDocks && rightOpen)}
-      pendingSuggestions={(activeChat(selected)?.messages ?? []).flatMap((m) => m.proposals ?? []).filter((x) => x.state === 'pending').length}
       onPanel={togglePanel}
       onDismissComment={dismissComment}
+      proposals={(activeChat(selected)?.messages ?? []).flatMap((m) => (m.proposals ?? []).filter((x) => x.state === 'pending').map((x) => ({ ...x, msgId: m.id })))}
+      onProposal={resolveProposal}
+      onAsk={askAbout}
+      snippets={snippetsFor(snippets, campaign).map((s) => ({ id: s.id, name: s.name, text: s.text, scope: scopeLabel(s.scope) }))}
+      snippetScopes={[
+        { value: 'global', label: 'Everywhere' },
+        { value: 'folder', label: folder.name || 'This folder' },
+        { value: 'campaign', label: campaign.name || 'This campaign' },
+      ]}
+      onSaveSnippet={(name, text, scope) =>
+        addSnippet(
+          { name, text, scope: scope === 'folder' ? { kind: 'folder', id: folder.id } : scope === 'campaign' ? { kind: 'campaign', id: campaign.id } : { kind: 'global' } },
+          `Saved “${name}”. Type / in an email to use it.`,
+        )
+      }
     />
   ) : (
-    <div className="flex h-full flex-col items-start justify-center gap-3 px-10">
-      <h2 className="font-heading text-2xl font-semibold">Nothing in {campaign.name || 'this campaign'} yet</h2>
-      <p className="max-w-md text-muted-foreground">
+    <div className="flex h-full min-w-0 flex-col">
+      <TopBar />
+      <div className="mx-auto w-full max-w-[600px] px-6 pt-12">
+      <h2 className="mb-2 font-heading text-2xl font-medium">Nothing in {campaign.name || 'this campaign'} yet</h2>
+      <p className="mb-8 text-muted-foreground">
         {campaign.notes.trim()
-          ? `Add the organisations you want to reach. ${agent} researches each one and drafts an email.`
-          : `Start with the campaign notes: what you’re asking for, the details ${agent} should mention, and what to look for when researching. Then add the organisations you want to reach.`}
+          ? `Add the organisations you want to reach. The AI researches each one${campaign.researchOnly ? '' : ' and drafts an email'}.`
+          : `Start with the campaign notes: what you’re asking for, the details the AI should mention, and what to look for when researching. Then add the organisations you want to reach.`}
       </p>
-      <div className="flex gap-2">
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-3 text-sm">
         {!campaign.notes.trim() && (
-          <Button onClick={() => openSettings({ kind: 'campaign', id: campaign.id })}>
-            <Flag /> Write campaign notes
+          <Button className="h-9 rounded-full px-4" onClick={() => openSettings({ kind: 'campaign', id: campaign.id })}>
+            Write campaign notes
           </Button>
         )}
-        <Button variant={campaign.notes.trim() ? 'default' : 'outline'} onClick={() => setAdding(true)}>
-          <Plus /> Add to campaign
-        </Button>
+        {campaign.notes.trim() ? (
+          <Button className="h-9 rounded-full px-4" onClick={() => openAdd()}>
+            Add organisations <span className="opacity-60">⌘N</span>
+          </Button>
+        ) : (
+          <button className="text-muted-foreground hover:text-foreground" onClick={() => openAdd()}>
+            Add organisations <Shortcut keys="⌘N" />
+          </button>
+        )}
+      </div>
       </div>
     </div>
   )
@@ -1488,7 +1725,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
   return (
     <TooltipProvider delayDuration={300}>
       <AgentProvider provider={settings?.aiProvider}>
-      <SidebarProvider open={leftOpen} onOpenChange={setLeftOpen} className="h-svh min-h-0 overflow-hidden">
+      <SidebarProvider open={leftOpen} onOpenChange={setLeftOpen} className="h-svh min-h-0 overflow-hidden" style={{ '--sidebar-width': '18rem' } as CSSProperties}>
         {view === 'settings' ? (
           <>
             <SettingsSidebar
@@ -1533,6 +1770,10 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
                 onDeleteVoiceNote={deleteVoiceNote}
                 onAddExample={addExample}
                 onDeleteExample={deleteExample}
+                snippets={snippets.filter((s) => !s.deletedAt)}
+                onAddSnippet={() => addSnippet({ name: '', text: '', scope: { kind: 'global' } })}
+                onUpdateSnippet={updateSnippet}
+                onDeleteSnippet={deleteSnippet}
               />
             </SidebarInset>
           </>
@@ -1540,36 +1781,44 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
           <>
             <AppSidebar
               prospects={inCampaign}
-              allProspects={prospects.filter((p) => !p.deletedAt)}
-              campaigns={aliveCampaigns}
-              campaignId={campaign.id}
-              voices={aliveVoices}
-              onDeleteProspect={deleteProspect}
-              onDeleteCampaign={deleteCampaign}
-              trashCount={trash.length}
-              onOpenTrash={() => openSettings({ kind: 'trash' })}
-              mailAddress={mailReady ? settings?.mail?.fromEmail : undefined}
-              onOpenSettings={() => openSettings()}
-              onSwitchCampaign={switchCampaign}
-              onEditCampaign={(id) => openSettings({ kind: 'campaign', id })}
-              onNewCampaign={() => openSettings({ kind: 'campaign', id: createCampaign() })}
-              folders={aliveFolders}
-              onEditFolder={(id) => openSettings({ kind: 'folder', id })}
-              onNewFolder={() => openSettings({ kind: 'folder', id: createFolder() })}
-              onSetVoice={setVoice}
-              onEditVoices={editVoices}
               selectedId={selectedId}
               onSelect={select}
-              onAdd={() => setAdding(true)}
+              onAdd={() => openAdd()}
+              onDeleteProspect={deleteProspect}
               filter={filter}
               onFilter={setFilter}
-              theme={theme}
-              onToggleTheme={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
               onOpenPalette={() => setPalette(true)}
-              onShowKeys={() => setHelp(true)}
+              onOpenSettings={() => openSettings()}
+              mailReady={mailReady}
+              onConnectMail={() => openSettings({ kind: 'mailbox' })}
+              switcher={{
+                open: switcherOpen,
+                onOpenChange: setSwitcherOpen,
+                folders: aliveFolders,
+                campaigns: aliveCampaigns,
+                allProspects: prospects.filter((p) => !p.deletedAt),
+                campaignId: campaign.id,
+                voices: aliveVoices,
+                onSwitchCampaign: switchCampaign,
+                onEditCampaign: (id) => openSettings({ kind: 'campaign', id }),
+                onEditFolder: (id) => openSettings({ kind: 'folder', id }),
+                onNewCampaign: () => openSettings({ kind: 'campaign', id: createCampaign() }),
+                onNewFolder: () => openSettings({ kind: 'folder', id: createFolder() }),
+                onSetVoice: setVoice,
+              }}
             />
             <SidebarInset className="min-w-0 overflow-hidden">
-              {rightDocks && selected && view === 'email' ? (
+              {view === 'add' ? (
+                <AddCompaniesPage
+                  campaign={campaign}
+                  voiceName={voice.name}
+                  text={addText}
+                  onText={setAddText}
+                  onAdd={addProspects}
+                  onCancel={() => setView('email')}
+                  onResearchOnly={(researchOnly) => updateCampaign(campaign.id, { researchOnly })}
+                />
+              ) : rightDocks && selected && view === 'email' ? (
                 <ResizablePanelGroup
                   orientation="horizontal"
                   className="h-full"
@@ -1583,7 +1832,8 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
                   <ResizablePanel id="main" minSize={420}>
                     {main}
                   </ResizablePanel>
-                  <ResizableHandle />
+                  {/* Still draggable, but no line: the column sits on the page like the sidebar. */}
+                  <ResizableHandle className="bg-transparent" />
                   <ResizablePanel
                     id="panel"
                     panelRef={rightPanelRef}
@@ -1604,11 +1854,21 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
         )}
 
         {!rightDocks && (
-          <Sheet open={rightOpen && !!selected && view === 'email'} onOpenChange={setRightOpen}>
-            <SheetContent side="right" showCloseButton={false} className="w-full gap-0 p-0 sm:max-w-md">
+          <Sheet open={sheetOpen} onOpenChange={setRightOpen}>
+            <SheetContent
+              side="right"
+              showCloseButton={false}
+              className="w-full gap-0 p-0 sm:max-w-md"
+              // Esc stops a reply that's being written before it closes the sheet.
+              onEscapeKeyDown={(e) => {
+                if (!replying) return
+                e.preventDefault()
+                stopReply()
+              }}
+            >
               <SheetHeader className="sr-only">
                 <SheetTitle>Brief & chat</SheetTitle>
-                <SheetDescription>Research brief and chat with {agent} for this email</SheetDescription>
+                <SheetDescription>Research brief and chat with the AI for this email</SheetDescription>
               </SheetHeader>
               {panel}
             </SheetContent>
@@ -1616,7 +1876,6 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
         )}
       </SidebarProvider>
 
-      <AddCompaniesDialog open={adding} onOpenChange={setAdding} campaign={campaign} voiceName={voice.name} onAdd={addProspects} />
       <CommandPalette open={palette} onOpenChange={setPalette} commands={commands} />
       <ShortcutsDialog open={help} onOpenChange={setHelp} />
       <Toaster theme={theme} position="bottom-center" />

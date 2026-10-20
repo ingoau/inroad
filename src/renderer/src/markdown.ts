@@ -1,4 +1,4 @@
-import { generateHTML, generateJSON, type AnyExtension } from '@tiptap/core'
+import { generateHTML, generateJSON, type AnyExtension, type JSONContent } from '@tiptap/core'
 import Blockquote from '@tiptap/extension-blockquote'
 import HardBreak from '@tiptap/extension-hard-break'
 import { Markdown, MarkdownManager } from '@tiptap/markdown'
@@ -171,3 +171,6 @@ export function markdownToText(md: string): string {
   })
   return blocks.join('\n\n')
 }
+
+// A document (or a slice of one, e.g. the selection) back to markdown.
+export const serializeMarkdown = (json: JSONContent) => manager.serialize(json)

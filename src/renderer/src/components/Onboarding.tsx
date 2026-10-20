@@ -7,7 +7,7 @@ import { ArrowLeft, ArrowRight, Check, CircleAlert, Loader2, Plus, Sparkles, X }
 import { useState, type ReactNode } from 'react'
 import type { PublicSettings } from '../../../shared/api'
 import icon from '../assets/icon.png'
-import { useAgentName } from '../agent'
+import { useAiProvider } from '../agent'
 import { ClaudeSetupDialog } from './ClaudeSetupDialog'
 import { FolderFields, type FolderInfo } from './FolderFields'
 import { MailboxForm } from './settings/GeneralPages'
@@ -37,7 +37,7 @@ export function Onboarding({
   onSettings: (s: PublicSettings) => void
 }) {
   const mailConnected = !!settings?.mail && !!settings.hasMailPassword
-  const agent = useAgentName()
+  const provider = useAiProvider()
   // A welcome page comes first; "Get started" asks how to connect Claude, then the steps begin.
   const [welcome, setWelcome] = useState(true)
   const [connecting, setConnecting] = useState(false)
@@ -67,7 +67,7 @@ export function Onboarding({
     {
       title: 'What’s your event?',
       description:
-        `It becomes a folder for your campaigns, and ${agent} uses it in every email. Type the name and ${agent} can pull the details from ${agent === 'opencode' ? 'the web' : 'your Slack, email and the web'}.`,
+        `It becomes a folder for your campaigns, and the AI uses it in every email. Type the name and the AI can pull the details from ${provider === 'opencode' ? 'the web' : 'your connected apps and the web'}.`,
       body: <FolderFields folder={folder} onChange={setFolder} autoFocus />,
       canContinue: !!folder.name.trim(),
     },
@@ -98,7 +98,7 @@ export function Onboarding({
               className="min-h-40 leading-relaxed"
             />
             <p className="text-xs text-muted-foreground">
-              Include tiers or prices, what they get back, and what {agent} should look for when researching each one.
+              Include tiers or prices, what they get back, and what the AI should look for when researching each one.
             </p>
           </div>
         </div>
@@ -106,7 +106,7 @@ export function Onboarding({
     },
     {
       title: 'How do you write?',
-      description: `Paste a few emails you’ve written, ideally similar outreach. ${agent} turns them into style rules and keeps them as examples.`,
+      description: `Paste a few emails you’ve written, ideally similar outreach. The AI turns them into style rules and keeps them as examples.`,
       canContinue: true,
       body: (
         <div className="grid gap-3">
@@ -220,7 +220,7 @@ export function Onboarding({
           <h1 className="font-heading text-3xl font-semibold">Welcome to Inroad</h1>
           <p className="mt-3 max-w-md text-balance text-muted-foreground">
             Research and draft personalised outreach emails in bulk, in your own voice. Add the organisations you want to reach: the AI agent researches each
-            one, writes an email that sounds like you, and saves it to your Drafts folder for you to send.
+            one and helps you write an email that sounds like you, then saves it to your Drafts folder for you to send.
           </p>
           <Button size="lg" className="mt-8" autoFocus onClick={() => setConnecting(true)}>
             Get started <ArrowRight />
