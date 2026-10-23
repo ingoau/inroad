@@ -671,6 +671,7 @@ export async function discover(cfg: ClaudeConfig, req: DiscoverRequest, emit: Em
       CandidateFields,
       async (c) => {
         const key = orgKey(c.name)
+        if (!key) return { content: [{ type: 'text', text: 'Give the organisation’s name.' }], isError: true }
         if (seen.has(key))
           return { content: [{ type: 'text', text: `${c.name} is already in the campaign, suggested or dismissed. Find a different one.` }], isError: true }
         seen.add(key)
@@ -697,6 +698,7 @@ export async function discover(cfg: ClaudeConfig, req: DiscoverRequest, emit: Em
     ]
       .filter(Boolean)
       .join('\n\n')
+    let outOfTurns = false
     try {
       await run(
         prompt,
@@ -709,12 +711,15 @@ export async function discover(cfg: ClaudeConfig, req: DiscoverRequest, emit: Em
           abortController: abort,
         }),
         (m) => {
+          if (m.type === 'result' && m.subtype === 'error_max_turns') outOfTurns = true
           for (const step of toolStep(m)) emit({ jobId: req.jobId, kind: 'step', text: step })
         },
       )
     } catch (err) {
-      // Stopped by the user, or ran out of turns: keep what was found so far.
-      if (abort?.signal.aborted || !found.length) throw err
+      // Running out of turns after finding some is a result; anything else
+      // (stopped, signed out, rate limited) is reported. Organisations already
+      // streamed stay in the UI either way.
+      if (!outOfTurns || abort?.signal.aborted || !found.length) throw err
     }
     return found
   })

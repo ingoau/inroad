@@ -156,17 +156,21 @@ export function FindOrganisations(props: FindProps) {
       {showDismissed && dismissed.size > 0 && (
         <section aria-label="Dismissed">
           <h2 className="mb-1 text-xs text-muted-foreground">Dismissed. Inroad won’t suggest these again.</h2>
-          {all.filter(isDismissed).map((c) => (
-            <div key={c.name} className="flex items-baseline gap-3 border-b border-border/50 py-2 text-sm text-muted-foreground">
-              <span className="min-w-0 flex-1 truncate">
-                {c.name}
-                {c.website && <span className="ml-2 text-xs">{hostname(c.website)}</span>}
-              </span>
-              <button onClick={() => props.onDismiss(c.name, false)} className="text-foreground hover:underline">
-                Restore
-              </button>
-            </div>
-          ))}
+          {/* Every dismissed name, including ones from searches since cleared. */}
+          {(discovery?.dismissed ?? []).map((name) => {
+            const website = all.find((c) => orgKey(c.name) === orgKey(name))?.website
+            return (
+              <div key={name} className="flex items-baseline gap-3 border-b border-border/50 py-2 text-sm text-muted-foreground">
+                <span className="min-w-0 flex-1 truncate">
+                  {name}
+                  {website && <span className="ml-2 text-xs">{hostname(website)}</span>}
+                </span>
+                <button onClick={() => props.onDismiss(name, false)} className="text-foreground hover:underline">
+                  Restore
+                </button>
+              </div>
+            )
+          })}
         </section>
       )}
 
@@ -176,7 +180,7 @@ export function FindOrganisations(props: FindProps) {
           value={more}
           onChange={(e) => setMore(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter') {
+            if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
               e.preventDefault()
               findMore()
             }

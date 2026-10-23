@@ -45,7 +45,7 @@ interface Props {
   onSelect: (id: string) => void
   onAdd: () => void
   // "Find with AI" for this campaign, while it's searching or has suggestions
-  // left to look at. Hidden on the Add page itself.
+  // left to look at. Hidden while its results are on screen.
   discovery?: { searching: boolean; count: number }
   onOpenDiscovery: () => void
   onDeleteProspect: (id: string) => void

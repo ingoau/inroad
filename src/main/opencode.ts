@@ -690,7 +690,8 @@ Search the web for evidence: who has done this before for similar events or caus
       const key = orgKey(o.name)
       if (!key || seen.has(key)) continue
       seen.add(key)
-      found.push({ name: o.name.trim(), website: o.website.trim(), why: o.why.trim(), fit: o.fit, sources: o.sources })
+      const sources = o.sources.filter((s) => s.title.trim() || s.url.trim())
+      found.push({ name: o.name.trim(), website: o.website.trim(), why: o.why.trim(), fit: o.fit, sources })
     }
     return found
   })

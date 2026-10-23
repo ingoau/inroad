@@ -1494,7 +1494,8 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
   const addProspects = (orgs: { name: string; website: string; note: string; discovery?: string }[], { stay = false } = {}) => {
     const added = orgs.map<Prospect>(({ name, website, note, discovery }) => ({
       id: crypto.randomUUID(),
-      campaignId,
+      // Not campaignId: that can point at a deleted campaign the page has fallen back from.
+      campaignId: campaign.id,
       company: name,
       domain: website,
       note: note || undefined,
@@ -1536,6 +1537,8 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
   const discoveryJobs = useRef(new Map<string, string>()) // campaign id → job id
   const viewRef = useRef(view)
   viewRef.current = view
+  const addModeRef = useRef(addMode)
+  addModeRef.current = addMode
   const campaignIdRef = useRef(campaign.id)
   campaignIdRef.current = campaign.id
 
@@ -1582,9 +1585,10 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     if (res.ok) addFound(res.value)
     const stopped = !res.ok && res.error === 'Stopped.'
     updateRound(cid, rid, (r) => ({ ...r, status: res.ok ? 'done' : stopped ? 'stopped' : 'failed', error: res.ok || stopped ? undefined : res.error }))
-    // Say so if you've moved on from the page (or the campaign was deleted meanwhile).
+    // Say so if you've moved on from the results, unless the campaign was deleted meanwhile.
     const c = campaignsRef.current.find((c) => c.id === cid)
-    if (stopped || !c || (viewRef.current === 'add' && campaignIdRef.current === cid)) return
+    const gone = !c || !!c.deletedAt || !!foldersRef.current.find((f) => f.id === c.folderId)?.deletedAt
+    if (stopped || gone || (viewRef.current === 'add' && addModeRef.current === 'find' && campaignIdRef.current === cid)) return
     const name = c.name || 'this campaign'
     notify({
       text: !res.ok ? `Couldn’t finish finding organisations for ${name}` : found ? `Found ${found} for ${name}` : `Found nothing new for ${name}`,
@@ -1596,7 +1600,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
   const addedIds = Object.fromEntries(inCampaign.map((p) => [orgKey(p.company), p.id]))
   const discoveryStatus = (() => {
     const d = campaign.discovery
-    if (!d?.rounds.length || view === 'add') return undefined
+    if (!d?.rounds.length || (view === 'add' && addMode === 'find')) return undefined
     const dismissed = new Set(d.dismissed.map(orgKey))
     const count = d.rounds.flatMap((r) => r.candidates).filter((c) => !dismissed.has(orgKey(c.name)) && !addedIds[orgKey(c.name)]).length
     const searching = discoveryJobs.current.has(campaign.id) || d.rounds.some((r) => r.status === 'searching')
@@ -1627,10 +1631,17 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     const prev = campaign.discovery
     if (!prev || discoveryJobs.current.has(cid)) return
     const query = prev.rounds[0]?.query ?? ''
-    const clear = () => updateCampaign(cid, { discovery: { rounds: [], dismissed: prev.dismissed } })
+    // Only these rounds come and go, so a search started since isn't touched.
+    const ids = new Set(prev.rounds.map((r) => r.id))
+    const clear = () => updateDiscovery(cid, (d) => ({ ...d, rounds: d.rounds.filter((r) => !ids.has(r.id)) }))
     clear()
     setFindText(query)
-    record('Cleared the suggestions', undefined, () => updateCampaign(cid, { discovery: prev }), clear)
+    record(
+      'Cleared the suggestions',
+      undefined,
+      () => updateDiscovery(cid, (d) => ({ ...d, rounds: [...prev.rounds, ...d.rounds.filter((r) => !ids.has(r.id))] })),
+      clear,
+    )
   }
 
   // Dismissed suggestions are hidden, and the agent is told not to suggest them again.

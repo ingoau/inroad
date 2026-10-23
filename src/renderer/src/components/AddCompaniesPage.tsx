@@ -176,34 +176,31 @@ export function AddCompaniesPage({
             </section>
           )}
 
-          {/* Once there are suggestions, the find-more bar ends the page. */}
-          {!(mode === 'find' && find.discovery?.rounds.length) && (
-            <div className="flex flex-wrap items-center gap-x-5 gap-y-3 text-sm">
-              {mode === 'find' ? null : orgs ? (
-                <>
-                  <Button disabled={!valid.length} onClick={submit} className="h-9 rounded-full px-4">
-                    Research {valid.length || ''} <span className="opacity-60">⌘↵</span>
-                  </Button>
-                  <button onClick={() => setOrgs(null)} className="text-muted-foreground hover:text-foreground">
-                    Edit the text
-                  </button>
-                </>
-              ) : (
-                <Button disabled={!lines.length || busy} onClick={next} className="h-9 rounded-full px-4">
-                  {busy && <Loader2 className="animate-spin" />}
-                  {busy ? 'Reading…' : 'Next'} {!busy && <span className="opacity-60">⌘↵</span>}
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-3 text-sm">
+            {mode === 'find' ? null : orgs ? (
+              <>
+                <Button disabled={!valid.length} onClick={submit} className="h-9 rounded-full px-4">
+                  Research {valid.length || ''} <span className="opacity-60">⌘↵</span>
                 </Button>
-              )}
-              <span className="text-muted-foreground">
-                {campaign.researchOnly
-                  ? 'Research only: you write each email, or press ⌘R to have the AI draft it.'
-                  : `Research and draft, in the “${voiceName}” voice.`}{' '}
-                <button onClick={() => onResearchOnly(!campaign.researchOnly)} className="text-foreground hover:underline">
-                  Change
+                <button onClick={() => setOrgs(null)} className="text-muted-foreground hover:text-foreground">
+                  Edit the text
                 </button>
-              </span>
-            </div>
-          )}
+              </>
+            ) : (
+              <Button disabled={!lines.length || busy} onClick={next} className="h-9 rounded-full px-4">
+                {busy && <Loader2 className="animate-spin" />}
+                {busy ? 'Reading…' : 'Next'} {!busy && <span className="opacity-60">⌘↵</span>}
+              </Button>
+            )}
+            <span className="text-muted-foreground">
+              {campaign.researchOnly
+                ? 'Research only: you write each email, or press ⌘R to have the AI draft it.'
+                : `Research and draft, in the “${voiceName}” voice.`}{' '}
+              <button onClick={() => onResearchOnly(!campaign.researchOnly)} className="text-foreground hover:underline">
+                Change
+              </button>
+            </span>
+          </div>
         </div>
       </div>
     </div>
