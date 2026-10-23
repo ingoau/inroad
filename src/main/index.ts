@@ -5,7 +5,7 @@ import type { ClaudeProgress, DraftInput, Result } from '../shared/api'
 import * as ai from './ai'
 import { configureClaude } from './claude'
 import { attachmentFile, pickAttachments } from './files'
-import { deleteDraft, saveDraft, testMail, type MailCreds } from './mail'
+import { checkSent, deleteDraft, saveDraft, testMail, type MailCreds } from './mail'
 import { getAiConfig, getPublicSettings, getSecrets, updateSettings } from './settings'
 import { loadState, saveState } from './store'
 
@@ -113,6 +113,7 @@ app.whenReady().then(() => {
   )
   ipcMain.handle('files:pickAttachments', (e) => pickAttachments(BrowserWindow.fromWebContents(e.sender)))
   ipcMain.handle('mail:deleteDraft', (_e, ref) => withMail((c) => deleteDraft(c, ref)))
+  ipcMain.handle('mail:checkSent', (_e, checks) => withMail((c) => checkSent(c, checks)))
 
   createWindow()
   app.on('activate', () => {

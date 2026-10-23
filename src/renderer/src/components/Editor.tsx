@@ -1,8 +1,10 @@
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
-import { Check, Loader2, Paperclip, Trash2, X } from 'lucide-react'
+import { Check, Copy, Loader2, Paperclip, Send, Trash2, X } from 'lucide-react'
 import { useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { hasEmail, statusAfter, type Attachment, type Comment, type Proposal, type Prospect, type Version } from '../data'
 import { changeCount } from '../diff'
@@ -31,6 +33,14 @@ interface Props {
   onHistoryOpenChange: (open: boolean) => void
   onChange: (patch: Partial<Prospect>) => void
   onSave: () => void
+  // Copies the email to paste into a contact form.
+  onCopy: () => void
+  markSentOpen: boolean
+  onMarkSentOpenChange: (open: boolean) => void
+  onMarkSent: (note: string) => void
+  onMarkNotSent: () => void
+  // Archives, or unarchives one that's archived.
+  onArchive: () => void
   onRetry: (website: string) => void
   onStopResearch: () => void
   // Which side-column tab is showing (null when it's closed).
@@ -102,6 +112,7 @@ export function Editor(props: Props) {
   const resolveNext = (accept: boolean) => props.proposals[0] && props.onProposal(props.proposals[0].msgId, props.proposals[0].id, accept)
 
   const setBody = (body: string) => onChange({ body, status: statusAfter(p, body) })
+  const sent = p.status === 'sent'
 
   return (
     <div className="@container flex h-full min-w-0 flex-col bg-background">
@@ -172,6 +183,27 @@ export function Editor(props: Props) {
 
           {editable && (
             <>
+              {(sent || p.archivedAt || p.draftMissing) && (
+                <div className="mb-6 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
+                  {sent ? (
+                    <span className="inline-flex min-w-0 items-center gap-1.5">
+                      <Send className="size-3.5 shrink-0 text-success" />
+                      <span className="text-foreground">Sent{p.sentAt ? ` ${when(p.sentAt)}` : ''}</span>
+                      {p.sentNote && <span className="truncate">· {p.sentNote}</span>}
+                    </span>
+                  ) : p.draftMissing ? (
+                    <span>No longer in your Drafts folder, and not in Sent yet. Sent it another way? Mark it as sent.</span>
+                  ) : (
+                    <span>Archived</span>
+                  )}
+                  {sent && <Quiet onClick={props.onMarkNotSent}>Not sent</Quiet>}
+                  {(sent || p.archivedAt) && (
+                    <Quiet onClick={props.onArchive}>
+                      {p.archivedAt ? 'Unarchive' : 'Archive'} <Shortcut keys="Y" />
+                    </Quiet>
+                  )}
+                </div>
+              )}
               <div className="flex flex-wrap items-center gap-1.5 text-sm text-muted-foreground">
                 <span>To</span>
                 {p.to.map((e) => (
@@ -251,11 +283,19 @@ export function Editor(props: Props) {
               )}
 
               <div className="mt-10 flex flex-wrap items-center gap-x-5 gap-y-3 text-sm">
-                <Button onClick={onSave} className="h-9 rounded-full px-4">
-                  {p.status === 'saved' && <Check />}
-                  {p.status === 'saved' ? 'Update draft' : 'Save to Drafts'}
-                  <span className="opacity-60">⌘↵</span>
+                {!sent && (
+                  <Button onClick={onSave} className="h-9 rounded-full px-4">
+                    {p.status === 'saved' && <Check />}
+                    {p.status === 'saved' ? 'Update draft' : 'Save to Drafts'}
+                    <span className="opacity-60">⌘↵</span>
+                  </Button>
+                )}
+                <Button variant="secondary" onClick={props.onCopy} className="h-9 rounded-full px-4" title="Copy the email, e.g. to paste into a contact form">
+                  <Copy />
+                  Copy
+                  <span className="opacity-60 @max-md:hidden">⌘⇧C</span>
                 </Button>
+                {!sent && <MarkSent key={p.id} open={props.markSentOpen} onOpenChange={props.onMarkSentOpenChange} onMark={props.onMarkSent} />}
                 <Quiet onClick={props.onRegenerate} disabled={regenerating}>
                   {regenerating && <Loader2 className="mr-1 inline size-3.5 animate-spin" />}
                   {hasDraft ? (regenerating ? 'Regenerating…' : 'Regenerate') : regenerating ? 'Writing…' : 'Write with AI'}
@@ -295,6 +335,60 @@ export function Editor(props: Props) {
         </div>
       </div>
     </div>
+  )
+}
+
+const when = (at: number) => new Date(at).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })
+
+// For emails sent some other way (a contact form, another mail app), with a note on how.
+function MarkSent({ open, onOpenChange, onMark }: { open: boolean; onOpenChange: (open: boolean) => void; onMark: (note: string) => void }) {
+  const [note, setNote] = useState('')
+  const submit = () => {
+    onMark(note)
+    setNote('')
+    onOpenChange(false)
+  }
+  return (
+    <Popover open={open} onOpenChange={onOpenChange}>
+      <PopoverTrigger asChild>
+        <button className="text-muted-foreground transition-colors hover:text-foreground data-[state=open]:text-foreground">Mark as sent</button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-80">
+        <form
+          className="flex flex-col gap-2"
+          onSubmit={(e) => {
+            e.preventDefault()
+            submit()
+          }}
+        >
+          <label htmlFor="sent-note" className="text-xs text-muted-foreground">
+            How did you send it? (optional)
+          </label>
+          <Textarea
+            id="sent-note"
+            autoFocus
+            rows={2}
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            onKeyDown={(e) => {
+              if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                // Closing re-renders before the key reaches the window, where ⌘↵ would save.
+                e.preventDefault()
+                e.stopPropagation()
+                submit()
+              }
+            }}
+            placeholder="e.g. Through their contact form"
+          />
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs text-muted-foreground">Moves it to Archived</span>
+            <Button type="submit" size="sm">
+              Mark as sent <span className="opacity-60">⌘↵</span>
+            </Button>
+          </div>
+        </form>
+      </PopoverContent>
+    </Popover>
   )
 }
 

@@ -1,9 +1,9 @@
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
-import { AlertCircle, CircleCheck, CircleDot, Clock, FileSearch, Loader2, PenLine, type LucideIcon } from 'lucide-react'
+import { AlertCircle, CircleCheck, CircleDot, Clock, FileSearch, Loader2, PenLine, Send, type LucideIcon } from 'lucide-react'
 import type { Status } from '../data'
 
-// Only "saved" and "failed" carry colour, because those are the ones that matter.
+// Only "saved", "sent" and "failed" carry colour, because those are the ones that matter.
 export const statusStyle: Record<Status, { label: string; Icon: LucideIcon; tone: string }> = {
   queued: { label: 'Queued', Icon: Clock, tone: 'text-muted-foreground' },
   researching: { label: 'Researching', Icon: Loader2, tone: 'text-muted-foreground' },
@@ -11,6 +11,7 @@ export const statusStyle: Record<Status, { label: string; Icon: LucideIcon; tone
   drafted: { label: 'To review', Icon: CircleDot, tone: 'text-muted-foreground' },
   edited: { label: 'Edited', Icon: PenLine, tone: 'text-muted-foreground' },
   saved: { label: 'In drafts', Icon: CircleCheck, tone: 'text-success' },
+  sent: { label: 'Sent', Icon: Send, tone: 'text-success' },
   failed: { label: 'Needs input', Icon: AlertCircle, tone: 'text-destructive' },
 }
 

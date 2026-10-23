@@ -36,6 +36,7 @@ const api: InroadApi = {
     test: () => ipcRenderer.invoke('mail:test'),
     saveDraft: (draft) => ipcRenderer.invoke('mail:saveDraft', draft),
     deleteDraft: (ref) => ipcRenderer.invoke('mail:deleteDraft', ref),
+    checkSent: (checks) => ipcRenderer.invoke('mail:checkSent', checks),
   },
 }
 
