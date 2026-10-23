@@ -258,9 +258,25 @@ export interface DraftInput {
 export interface DraftRef {
   mailbox: string
   messageId: string
+  // When it reached the mailbox. Missing on drafts saved by older versions.
+  savedAt?: number
 }
 
-export type Result<T> = { ok: true; value: T } | { ok: false; error: string }
+// A saved draft to look for: still in Drafts, or sent from the mail app.
+export interface SentCheck {
+  id: string
+  ref: DraftRef
+  // Who the draft was to, for spotting the sent copy when the mail app gave it a new Message-ID.
+  to: string[]
+  // When the draft was saved; anything sent to them before then isn't it.
+  savedAt: number
+}
+
+// draft: still in Drafts. sent: found in the Sent folder (at: when it was sent).
+// missing: gone from Drafts but not in Sent, so deleted, scheduled or still sending.
+export type SentState = { state: 'draft' } | { state: 'sent'; at: number } | { state: 'missing' }
+
+export type Result<T> ={ ok: true; value: T } | { ok: false; error: string }
 
 export interface InroadApi {
   // process.platform, e.g. 'darwin'.
@@ -301,5 +317,8 @@ export interface InroadApi {
     test: () => Promise<Result<{ draftsMailbox: string }>>
     saveDraft: (draft: DraftInput) => Promise<Result<DraftRef>>
     deleteDraft: (ref: DraftRef) => Promise<Result<null>>
+    // Looks each draft up in Drafts and then Sent, by id. Ones it can't decide
+    // (e.g. no Sent folder) are left out.
+    checkSent: (checks: SentCheck[]) => Promise<Result<Record<string, SentState>>>
   }
 }

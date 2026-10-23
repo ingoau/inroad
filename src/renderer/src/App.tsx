@@ -5,6 +5,9 @@ import { Toaster } from '@/components/ui/sonner'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { Button } from '@/components/ui/button'
 import {
+  Archive,
+  ArchiveRestore,
+  Copy,
   FileText,
   FolderOpen,
   FolderPlus,
@@ -21,6 +24,7 @@ import {
   Plus,
   Redo2,
   RefreshCw,
+  Send,
   Settings,
   Slash,
   Square,
@@ -47,6 +51,7 @@ import { useBreakpoint } from './layout'
 import {
   MAX_VOICE_EXAMPLES,
   hasEmail,
+  isDone,
   snippetsFor,
   statusAfter,
   type Attachment,
@@ -61,7 +66,7 @@ import {
   type Voice,
   type VoiceExample,
 } from './data'
-import type { ClaudeProgress, DraftRef, EmailComment, PublicSettings, VoiceInput } from '../../shared/api'
+import type { ClaudeProgress, DraftRef, EmailComment, PublicSettings, SentCheck, VoiceInput } from '../../shared/api'
 import { firstRun, persist, upgrade, type SavedState } from './persist'
 import { defaultEmailStyle, emailHtml, emailStyleVars, markdownToText, normalizeMarkdown, type EmailStyle } from './markdown'
 import { Onboarding, type OnboardingResult } from './components/Onboarding'
@@ -71,6 +76,8 @@ const MAX_CONCURRENT = 3
 // How long a save is held back before it touches the mailbox; undoing inside
 // this window cancels it rather than having to delete the draft.
 const UNDO_GRACE_MS = 5000
+// How often saved drafts are looked for in Sent while Inroad is open (also on focus).
+const SENT_CHECK_MS = 3 * 60_000
 type Theme = 'dark' | 'light'
 
 // What save-and-next and N move on to: drafts to review, and research-only emails still to write.
@@ -133,6 +140,8 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
   // The campaign switcher (⌘O) and the History menu (⌘⇧H).
   const [switcherOpen, setSwitcherOpen] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
+  // The "Mark as sent" popover under the email.
+  const [markSentOpen, setMarkSentOpen] = useState(false)
   const [showDiff, setShowDiff] = useState(false)
   // What's typed on the Add page, kept while you look elsewhere.
   const [addText, setAddText] = useState('')
@@ -186,7 +195,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
   const update = (id: string, fn: (p: Prospect) => Prospect) => setProspects((ps) => ps.map((p) => (p.id === id ? fn(p) : p)))
   // The side column is an overlay (a sheet) only on narrower windows, and only while it's showing.
   const sheetOpen = !rightDocks && rightOpen && !!selected && view === 'email'
-  const overlayOpen = palette || help || switcherOpen || historyOpen || sheetOpen
+  const overlayOpen = palette || help || switcherOpen || historyOpen || markSentOpen || sheetOpen
   // Latest state for callbacks that run later (timers, undo closures).
   const prospectsRef = useRef(prospects)
   prospectsRef.current = prospects
@@ -412,7 +421,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
   const switchCampaign = (id: string) => {
     setCampaignId(id)
     const list = prospects.filter((p) => p.campaignId === id && !p.deletedAt)
-    const first = list.find(needsReview) ?? list[0]
+    const first = list.find(needsReview) ?? list.find((p) => !p.archivedAt) ?? list[0]
     if (first) select(first.id)
   }
 
@@ -660,6 +669,8 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
   }
 
   const commitTimers = useRef<Record<string, number>>({})
+  // Saves still in their undo window: the mailbox doesn't have them yet, so don't look for them.
+  const pendingSaves = useRef(new Set<string>())
 
   // ---- Voice learning: what a save taught Claude about how you write ----
   const applyVoiceChange = (c: VoiceChange, on: boolean) =>
@@ -700,6 +711,8 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
 
   const save = () => {
     if (!selected || !hasEmail(selected)) return
+    // Another draft would only invite sending it twice.
+    if (selected.status === 'sent') return notify({ text: `${selected.company}'s email was already sent, so there's nothing to save` })
     if (!selected.body.trim()) return notify({ text: 'Write the email first, or press ⌘R to have the AI draft it' })
     if (!mailReady)
       return notify({ text: 'Connect your mailbox to save drafts', action: { label: 'Open settings', run: () => openSettings({ kind: 'mailbox' }) } })
@@ -715,6 +728,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
 
     const commit = async () => {
       sync.committed = true
+      pendingSaves.current.delete(pid)
       const p = get(pid)
       if (!p || !window.api) return
       const attachments = campaignsRef.current.find((c) => c.id === p.campaignId)?.attachments ?? []
@@ -746,6 +760,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
       }))
       // Held back briefly so undo can cancel it before anything reaches the mailbox.
       sync.committed = false
+      pendingSaves.current.add(pid)
       clearTimeout(commitTimers.current[pid])
       commitTimers.current[pid] = window.setTimeout(commit, UNDO_GRACE_MS)
       if (!edited) return
@@ -779,6 +794,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
         if (learn.change) applyVoiceChange(learn.change, false)
         if (!sync.committed) {
           clearTimeout(commitTimers.current[pid])
+          pendingSaves.current.delete(pid)
           return `Cancelled saving ${company}. Nothing reached your mailbox.`
         }
         if (sync.ref && window.api)
@@ -789,6 +805,150 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
       `Saved ${company} to Drafts${nextName ? ` · now on ${nextName}` : ''}`,
     )
     ;(document.activeElement as HTMLElement | null)?.blur()
+  }
+
+  // ---- Sent & archived ----
+  // When an organisation drops out of the list being worked through, move on to its neighbour.
+  const leaveList = (id: string, after: Prospect) => {
+    if (id !== selectedId || inFilter[filter](after)) return
+    const i = shown.findIndex((x) => x.id === id)
+    const rest = shown.filter((x) => x.id !== id)
+    const next = rest[Math.min(Math.max(i, 0), rest.length - 1)]
+    if (next) select(next.id)
+  }
+
+  const toggleArchive = (id: string) => {
+    const p = get(id)
+    if (!p) return
+    const prev = p.archivedAt
+    const at = prev ? undefined : Date.now()
+    const set = (archivedAt?: number) => update(id, (q) => ({ ...q, archivedAt }))
+    leaveList(id, { ...p, archivedAt: at })
+    set(at)
+    record(at ? `Archived ${p.company}` : `Unarchived ${p.company}`, id, () => set(prev), () => set(at))
+  }
+
+  type SentFields = Pick<Prospect, 'status' | 'sentAt' | 'sentNote' | 'archivedAt' | 'draftMissing' | 'draftRef'>
+  const sentFields = (p: Prospect): SentFields => ({
+    status: p.status,
+    sentAt: p.sentAt,
+    sentNote: p.sentNote,
+    archivedAt: p.archivedAt,
+    draftMissing: p.draftMissing,
+    draftRef: p.draftRef,
+  })
+  const setSentFields = (id: string, f: SentFields) => update(id, (q) => ({ ...q, ...f }))
+
+  // For emails sent some other way (a contact form, another mail app), or that Inroad didn't spot.
+  const markSent = (id: string, note = '') => {
+    const p = get(id)
+    if (!p || !hasEmail(p)) return
+    const before = sentFields(p)
+    const now = Date.now()
+    const after: SentFields = { ...before, status: 'sent', sentAt: now, sentNote: note.trim() || undefined, archivedAt: p.archivedAt ?? now, draftMissing: undefined }
+    leaveList(id, { ...p, ...after })
+    setSentFields(id, after)
+    record('Marked as sent', id, () => setSentFields(id, before), () => setSentFields(id, after), `Marked ${p.company} as sent · moved to Archived`)
+  }
+
+  // Inroad got it wrong (or you changed your mind). The draft left Drafts when it
+  // was sent, so forget it rather than spotting the same sent copy again.
+  const markNotSent = (id: string) => {
+    const p = get(id)
+    if (!p || p.status !== 'sent') return
+    const before = sentFields(p)
+    const after: SentFields = {
+      status: statusAfter({ ...p, status: 'edited' }, p.body),
+      sentAt: undefined,
+      sentNote: undefined,
+      archivedAt: undefined,
+      draftMissing: undefined,
+      draftRef: undefined,
+    }
+    setSentFields(id, after)
+    record('Marked as not sent', id, () => setSentFields(id, before), () => setSentFields(id, after), `Marked ${p.company} as not sent`)
+  }
+
+  // Saved drafts that left Drafts and turned up in Sent were sent from the
+  // mail app: mark them sent and archive them. Runs quietly; a failed check just waits for the next.
+  const checkingSent = useRef(false)
+  const checkSent = async () => {
+    if (!window.api || !mailReady || checkingSent.current) return
+    // Drafts saved before Inroad recorded the time: the last "Saved to Drafts" version.
+    const savedAt = (p: Prospect) => p.draftRef?.savedAt ?? [...p.versions].reverse().find((v) => v.label === 'Saved to Drafts')?.at ?? 0
+    const checks: SentCheck[] = prospectsRef.current
+      .filter((p) => p.status === 'saved' && p.draftRef && !p.deletedAt && !pendingSaves.current.has(p.id))
+      .map((p) => ({ id: p.id, ref: p.draftRef!, to: p.to, savedAt: savedAt(p) }))
+    if (!checks.length) return
+    checkingSent.current = true
+    const res = await window.api.mail.checkSent(checks).finally(() => (checkingSent.current = false))
+    if (!res.ok) return
+    const sent: string[] = []
+    for (const c of checks) {
+      const r = res.value[c.id]
+      const p = get(c.id)
+      // Skip anything saved again, or changed by hand, while the check ran.
+      if (!r || !p || p.status !== 'saved' || p.draftRef?.messageId !== c.ref.messageId || pendingSaves.current.has(p.id)) continue
+      if (r.state === 'sent') {
+        update(p.id, (q) => ({ ...q, status: 'sent', sentAt: r.at, archivedAt: q.archivedAt ?? Date.now(), draftMissing: undefined }))
+        sent.push(p.company)
+      } else if (!!p.draftMissing !== (r.state === 'missing')) update(p.id, (q) => ({ ...q, draftMissing: r.state === 'missing' || undefined }))
+    }
+    if (sent.length)
+      notify({
+        text: sent.length === 1 ? `${sent[0]}'s email was sent · moved to Archived` : `${sent.length} emails were sent · moved to Archived`,
+        action: { label: 'Show', run: () => setFilter('archived') },
+      })
+  }
+  const checkSentRef = useRef(checkSent)
+  checkSentRef.current = checkSent
+  useEffect(() => {
+    if (!mailReady) return
+    const run = () => void checkSentRef.current()
+    run()
+    const timer = window.setInterval(run, SENT_CHECK_MS)
+    // Coming back from the mail app is when something's most likely just been sent.
+    window.addEventListener('focus', run)
+    return () => {
+      clearInterval(timer)
+      window.removeEventListener('focus', run)
+    }
+  }, [mailReady])
+
+  // For contact forms: plain text pastes into a form, HTML into a rich editor.
+  const copyEmail = async (what: 'body' | 'subject' = 'body') => {
+    if (!selected || !hasEmail(selected)) return
+    const p = selected
+    if (what === 'subject') {
+      if (!p.subject.trim()) return notify({ text: 'There’s no subject yet' })
+      await navigator.clipboard.writeText(p.subject)
+      return notify({ text: 'Copied the subject' })
+    }
+    if (!p.body.trim()) return notify({ text: 'Write the email first, or press ⌘R to have the AI draft it' })
+    const text = markdownToText(p.body)
+    try {
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          'text/plain': new Blob([text], { type: 'text/plain' }),
+          'text/html': new Blob([emailHtml(p.body, emailStyleRef.current)], { type: 'text/html' }),
+        }),
+      ])
+    } catch {
+      await navigator.clipboard.writeText(text)
+    }
+    notify({
+      text: p.status === 'sent' ? `Copied ${p.company}'s email` : `Copied ${p.company}'s email. Once it's sent, mark it as sent.`,
+      action:
+        p.status === 'sent'
+          ? undefined
+          : {
+              label: 'Mark as sent',
+              run: () => {
+                goTo(p.id)
+                setMarkSentOpen(true)
+              },
+            },
+    })
   }
 
   // Research-only campaigns: write the email for one organisation from its research.
@@ -810,7 +970,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     const apply = () =>
       update(pid, (q) => ({
         ...q,
-        status: q.status === 'saved' ? 'saved' : 'drafted',
+        status: isDone(q.status) ? q.status : 'drafted',
         brief: res.value.brief,
         subject: res.value.subject,
         body: md,
@@ -860,7 +1020,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
         body: md,
         originalBody: md,
         subject,
-        status: x.status === 'saved' ? 'saved' : 'drafted',
+        status: isDone(x.status) ? x.status : 'drafted',
         versions: [...x.versions.filter((v) => !added.some((a) => a.id === v.id)), ...added],
         // The new draft's comments replace the old draft's; ones from chat stay.
         comments: [...(x.comments ?? []).filter((c) => c.by !== 'draft' && !fresh.some((f) => f.id === c.id)), ...fresh],
@@ -1161,6 +1321,8 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
         if (key === '[') return run(() => step(-1))
         if (key === 'd' && !e.shiftKey) return run(() => selected?.originalBody && setShowDiff((v) => !v))
         if (key === 'r' && !e.shiftKey) return run(regenerate)
+        // Plain ⌘C is left alone for copying a selection.
+        if (key === 'c' && e.shiftKey) return run(() => void copyEmail())
       }
       if (typing || mod || e.altKey) return
 
@@ -1174,6 +1336,8 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
         '2': () => setFilter('write'),
         '3': () => setFilter('all'),
         '4': () => setFilter('saved'),
+        '5': () => setFilter('archived'),
+        y: () => view === 'email' && selected && toggleArchive(selected.id),
         e: editBody,
         Enter: editBody,
         t: addTopRecipient,
@@ -1357,12 +1521,33 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
       group: 'Organisations',
       label: p.company,
       icon: <span className={`mx-[5px] size-1.5 shrink-0 rounded-full ${dot(p)}`} />,
-      hint: statusStyle[p.status].label,
+      hint: statusStyle[p.status].label + (p.archivedAt ? ' · archived' : ''),
       run: () => select(p.id),
     })),
     ...(undoTop ? [{ id: 'undo', group: 'Actions' as const, label: `Undo: ${undoTop.label}`, icon: <Undo2 />, shortcut: '⌘Z', run: appUndo }] : []),
     ...(redoTop ? [{ id: 'redo', group: 'Actions' as const, label: `Redo: ${redoTop.label}`, icon: <Redo2 />, shortcut: '⌘⇧Z', run: appRedo }] : []),
     { id: 'save', group: 'Actions', label: 'Save to drafts', icon: <Inbox />, shortcut: '⌘↵', run: save },
+    ...(selected && hasEmail(selected)
+      ? [
+          { id: 'copy', group: 'Actions' as const, label: 'Copy email (for a contact form)', icon: <Copy />, shortcut: '⌘⇧C', run: () => void copyEmail() },
+          { id: 'copy-subject', group: 'Actions' as const, label: 'Copy subject', icon: <Copy />, run: () => void copyEmail('subject') },
+          selected.status === 'sent'
+            ? { id: 'unsend', group: 'Actions' as const, label: 'Mark as not sent', icon: <Send />, run: () => markNotSent(selected.id) }
+            : { id: 'mark-sent', group: 'Actions' as const, label: 'Mark as sent…', icon: <Send />, run: () => setMarkSentOpen(true) },
+        ]
+      : []),
+    ...(selected
+      ? [
+          {
+            id: 'archive',
+            group: 'Actions' as const,
+            label: `${selected.archivedAt ? 'Unarchive' : 'Archive'} ${selected.company}`,
+            icon: selected.archivedAt ? <ArchiveRestore /> : <Archive />,
+            shortcut: 'Y',
+            run: () => toggleArchive(selected.id),
+          },
+        ]
+      : []),
     ...(selected?.originalBody
       ? [{ id: 'diff', group: 'Actions' as const, label: 'Compare with the AI draft', icon: <GitCompare />, shortcut: '⌘D', run: () => setShowDiff((v) => !v) }]
       : []),
@@ -1663,6 +1848,12 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
       onRetry={(website) => update(selected.id, (p) => ({ ...p, status: 'queued', progress: [], error: undefined, domain: website || p.domain }))}
       onStopResearch={() => stopJob(researchJobs.current, selected.id)}
       onSave={save}
+      onCopy={() => void copyEmail()}
+      markSentOpen={markSentOpen}
+      onMarkSentOpenChange={setMarkSentOpen}
+      onMarkSent={(note) => markSent(selected.id, note)}
+      onMarkNotSent={() => markNotSent(selected.id)}
+      onArchive={() => toggleArchive(selected.id)}
       panelTab={rightOpen ? tab : null}
       onPanel={togglePanel}
       onDismissComment={dismissComment}
@@ -1785,6 +1976,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
               onSelect={select}
               onAdd={() => openAdd()}
               onDeleteProspect={deleteProspect}
+              onArchiveProspect={toggleArchive}
               filter={filter}
               onFilter={setFilter}
               onOpenPalette={() => setPalette(true)}

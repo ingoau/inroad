@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { ImapFlow } from 'imapflow'
 import MailComposer from 'nodemailer/lib/mail-composer'
-import type { DraftInput, DraftRef, MailSettings, Result } from '../shared/api'
+import type { DraftInput, DraftRef, MailSettings, Result, SentCheck, SentState } from '../shared/api'
 
 export interface MailCreds {
   mail: MailSettings
@@ -83,7 +83,74 @@ export function saveDraft(creds: MailCreds, draft: DraftInput, files: { filename
     const raw = await message.build()
     const res = await client.append(mailbox, raw, ['\\Draft', '\\Seen'])
     if (!res) throw new Error('The server refused the draft')
-    return { mailbox, messageId }
+    return { mailbox, messageId, savedAt: Date.now() }
+  })
+}
+
+// The \Sent special-use folder, or one named like it. Undefined if there isn't one.
+async function findSent(client: ImapFlow): Promise<string | undefined> {
+  const boxes = await client.list()
+  return (boxes.find((b) => b.specialUse === '\\Sent') ?? boxes.find((b) => /^sent( items| mail| messages)?$/i.test(b.name)))?.path
+}
+
+// Mail apps and servers stamp the sent copy a little after the save; allow for clocks that disagree.
+const CLOCK_SLACK_MS = 5 * 60_000
+
+// Drafts that are still there are the common case, so look there first. For
+// the rest, the sent copy usually keeps our Message-ID; some mail apps (Apple
+// Mail) write a new one, so fall back to anything sent to the same address
+// after the draft was saved. Not the subject: people tweak it before sending.
+export function checkSent(creds: MailCreds, checks: SentCheck[]): Promise<Result<Record<string, SentState>>> {
+  return run(creds, async (client) => {
+    const out: Record<string, SentState> = {}
+    for (const mailbox of new Set(checks.map((c) => c.ref.mailbox))) {
+      let lock
+      try {
+        lock = await client.getMailboxLock(mailbox)
+      } catch {
+        continue // The Drafts folder was renamed or removed: look in Sent below.
+      }
+      try {
+        for (const c of checks.filter((c) => c.ref.mailbox === mailbox)) {
+          const uids = await client.search({ header: { 'message-id': c.ref.messageId } }, { uid: true })
+          if (uids && uids.length) out[c.id] = { state: 'draft' }
+        }
+      } finally {
+        lock.release()
+      }
+    }
+    const rest = checks.filter((c) => !out[c.id])
+    if (!rest.length) return out
+    const sent = await findSent(client)
+    // Without a Sent folder there's no telling sent from deleted, so say nothing.
+    if (!sent) return out
+    const lock = await client.getMailboxLock(sent)
+    try {
+      // When each message reached Sent (the server's own timestamp).
+      const times = async (uids: number[]) => {
+        const out: number[] = []
+        for await (const m of client.fetch(uids.join(','), { internalDate: true }, { uid: true }))
+          if (m.internalDate) out.push(new Date(m.internalDate).getTime())
+        return out
+      }
+      for (const c of rest) {
+        const byId = (await client.search({ header: { 'message-id': c.ref.messageId } }, { uid: true })) || []
+        if (byId.length) {
+          // Our own Message-ID is certain, whatever the date says.
+          const at = await times(byId)
+          out[c.id] = { state: 'sent', at: at.length ? Math.min(...at) : Date.now() }
+          continue
+        }
+        const after = c.savedAt - CLOCK_SLACK_MS
+        // SINCE only compares dates, so check the exact time after.
+        const byTo = c.to[0] ? (await client.search({ to: c.to[0], since: new Date(after) }, { uid: true })) || [] : []
+        const at = byTo.length ? (await times(byTo)).filter((t) => t >= after) : []
+        out[c.id] = at.length ? { state: 'sent', at: Math.min(...at) } : { state: 'missing' }
+      }
+    } finally {
+      lock.release()
+    }
+    return out
   })
 }
 

@@ -72,6 +72,7 @@ export function globalShortcuts(): [string, string][] {
     ['⌘ ⇧ H', 'History'],
     ['⌘ ,', 'Settings (mailbox and AI agent)'],
     ['⌘ R', 'Regenerate, or write with AI'],
+    ['⌘ ⇧ C', 'Copy the email, e.g. for a contact form'],
     ['⌘ B', 'Bold (also ⌘ I italic, ⌘ ⇧ S strikethrough)'],
     ['esc', 'Stop the AI’s reply, or leave the text box'],
   ]
@@ -87,7 +88,8 @@ export const NAV_SHORTCUTS: [string, string][] = [
   ['T', 'Add the top suggested recipient'],
   ['A', 'Accept next suggestion'],
   ['X', 'Reject next suggestion'],
-  ['1 2 3 4', 'Filter: to review / to write / all / saved'],
+  ['1 2 3 4 5', 'Filter: to review / to write / all / saved / archived'],
+  ['Y', 'Archive / unarchive (sent emails archive themselves)'],
   ['C', 'Add to campaign'],
   ['⌫', 'Delete organisation (goes to Deleted items)'],
   ['?', 'This list'],

@@ -3,31 +3,36 @@ import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuShortcut, 
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Sidebar, SidebarContent, SidebarFooter, SidebarHeader, useSidebar } from '@/components/ui/sidebar'
 import { cn } from '@/lib/utils'
-import { Trash2 } from 'lucide-react'
+import { Archive, ArchiveRestore, Trash2 } from 'lucide-react'
 import { useEffect } from 'react'
-import { hasEmail, type Campaign, type Folder, type Prospect, type Voice } from '../data'
+import { hasEmail, isDone, type Campaign, type Folder, type Prospect, type Voice } from '../data'
 import { Shortcut } from './hint'
 
 // The sidebar list's filters. "To write" is research-only organisations whose
 // email nobody has written yet; "To review" has a draft (or needs attention).
-export type Filter = 'review' | 'write' | 'all' | 'saved'
+// Archived ones (including everything sent) only show under Archived.
+export type Filter = 'review' | 'write' | 'all' | 'saved' | 'archived'
 const toWrite = (p: Prospect) => p.status === 'researched' || (p.status === 'edited' && !p.originalBody)
 export const inFilter: Record<Filter, (p: Prospect) => boolean> = {
-  review: (p) => p.status === 'failed' || (hasEmail(p) && p.status !== 'saved' && !toWrite(p)),
-  write: toWrite,
-  all: () => true,
-  saved: (p) => p.status === 'saved',
+  review: (p) => !p.archivedAt && (p.status === 'failed' || (hasEmail(p) && !isDone(p.status) && !toWrite(p))),
+  write: (p) => !p.archivedAt && toWrite(p),
+  all: (p) => !p.archivedAt,
+  saved: (p) => !p.archivedAt && p.status === 'saved',
+  archived: (p) => !!p.archivedAt,
 }
 export const FILTERS: [Filter, string][] = [
   ['review', 'To review'],
   ['write', 'To write'],
   ['all', 'All'],
   ['saved', 'Saved'],
+  ['archived', 'Archived'],
 ]
 
 // A dot per organisation: the only status shown in the list (and in ⌘K).
 export const dot = (p: Prospect) =>
-  p.status === 'saved'
+  p.status === 'sent'
+    ? 'bg-success/45'
+    : p.status === 'saved'
     ? 'bg-success'
     : p.status === 'failed'
       ? 'bg-destructive'
@@ -45,6 +50,8 @@ interface Props {
   onSelect: (id: string) => void
   onAdd: () => void
   onDeleteProspect: (id: string) => void
+  // Archives, or unarchives one that's archived.
+  onArchiveProspect: (id: string) => void
   filter: Filter
   onFilter: (f: Filter) => void
   onOpenPalette: () => void
@@ -86,8 +93,9 @@ export function AppSidebar(props: Props) {
       </SidebarHeader>
 
       <SidebarContent className="px-5">
-        <div role="tablist" aria-label="Filter" className="flex gap-x-3 pt-2 pb-3 text-[13px] whitespace-nowrap">
-          {FILTERS.map(([f, label]) => (
+        <div role="tablist" aria-label="Filter" className="flex flex-wrap gap-x-3 gap-y-1 pt-2 pb-3 text-[13px] whitespace-nowrap">
+          {/* Archived only takes up room once something's in it. */}
+          {FILTERS.filter(([f]) => f !== 'archived' || filter === f || count(f) > 0).map(([f, label]) => (
             <button
               key={f}
               role="tab"
@@ -119,6 +127,10 @@ export function AppSidebar(props: Props) {
                 </button>
               </ContextMenuTrigger>
               <ContextMenuContent className="w-48">
+                <ContextMenuItem onSelect={() => props.onArchiveProspect(p.id)}>
+                  {p.archivedAt ? <ArchiveRestore /> : <Archive />} {p.archivedAt ? 'Unarchive' : 'Archive'}
+                  <ContextMenuShortcut>Y</ContextMenuShortcut>
+                </ContextMenuItem>
                 <ContextMenuItem variant="destructive" onSelect={() => props.onDeleteProspect(p.id)}>
                   <Trash2 /> Delete
                   <ContextMenuShortcut>⌫</ContextMenuShortcut>

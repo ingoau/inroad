@@ -8,7 +8,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ImapFlow } from 'imapflow'
-import { deleteDraft, saveDraft, testMail, type MailCreds } from '../src/main/mail'
+import { checkSent, deleteDraft, saveDraft, testMail, type MailCreds } from '../src/main/mail'
 
 const creds: MailCreds = {
   mail: { host: '127.0.0.1', port: 3143, secure: false, user: 'jordan@test.local', fromName: 'Jordan Ellis', fromEmail: 'jordan@test.local' },
@@ -34,6 +34,7 @@ async function countDrafts() {
 const setup = await client()
 const boxes = await setup.list()
 if (!boxes.some((b) => b.name === 'Drafts')) await setup.mailboxCreate('Drafts')
+if (!boxes.some((b) => b.name === 'Sent')) await setup.mailboxCreate('Sent')
 await setup.logout()
 
 const t = await testMail(creds)
@@ -74,6 +75,54 @@ const del = await deleteDraft(creds, saved.value)
 assert.deepEqual(del, { ok: true, value: null })
 assert.equal(await countDrafts(), before)
 console.log('✓ deleteDraft removes it again')
+
+// Sent detection. Each case saves a fresh draft, then does what a mail app would.
+const draft = (to: string) => ({ to: [to], subject: 'Sponsoring', html: '<p>Hi</p>', text: 'Hi', attachments: [] })
+async function moveToSent(messageId: string, newId?: string, at = new Date()) {
+  const c = await client()
+  const lock = await c.getMailboxLock('Drafts')
+  const uids = (await c.search({ header: { 'message-id': messageId } }, { uid: true })) || []
+  const src = (await c.fetchOne(String(uids[0]), { source: true }, { uid: true }))!.source!.toString()
+  await c.messageDelete(uids.join(','), { uid: true })
+  lock.release()
+  await c.append('Sent', newId ? src.replace(messageId, newId) : src, ['\\Seen'], at)
+  await c.logout()
+}
+const check = async (id: string, ref: { mailbox: string; messageId: string; savedAt?: number }, to: string) => {
+  const r = await checkSent(creds, [{ id, ref, to: [to], savedAt: ref.savedAt! }])
+  assert.ok(r.ok, !r.ok ? r.error : '')
+  return r.value[id]
+}
+
+const still = await saveDraft(creds, draft('a@still.example'))
+assert.ok(still.ok)
+assert.deepEqual(await check('still', still.value, 'a@still.example'), { state: 'draft' })
+console.log('✓ checkSent: a draft still in Drafts is a draft')
+
+const same = await saveDraft(creds, draft('b@same.example'))
+assert.ok(same.ok)
+await moveToSent(same.value.messageId)
+assert.equal((await check('same', same.value, 'b@same.example'))?.state, 'sent')
+console.log('✓ checkSent: sent copy with our Message-ID is sent')
+
+const fresh = await saveDraft(creds, draft('c@fresh.example'))
+assert.ok(fresh.ok)
+await moveToSent(fresh.value.messageId, '<new-id@mail.example>')
+assert.equal((await check('fresh', fresh.value, 'c@fresh.example'))?.state, 'sent')
+console.log('✓ checkSent: sent copy with a new Message-ID is matched by recipient and time')
+
+const old = await saveDraft(creds, draft('d@old.example'))
+assert.ok(old.ok)
+// Something sent to them a day before this draft doesn't count.
+await moveToSent(old.value.messageId, '<older@mail.example>', new Date(Date.now() - 86_400_000))
+assert.deepEqual(await check('old', old.value, 'd@old.example'), { state: 'missing' })
+console.log('✓ checkSent: an earlier email to the same address is not this one')
+
+const gone = await saveDraft(creds, draft('e@gone.example'))
+assert.ok(gone.ok)
+await deleteDraft(creds, gone.value)
+assert.deepEqual(await check('gone', gone.value, 'e@gone.example'), { state: 'missing' })
+console.log('✓ checkSent: a deleted draft is missing, not sent')
 
 const bad = await testMail({ ...creds, mail: { ...creds.mail, port: 1 } })
 assert.equal(bad.ok, false)

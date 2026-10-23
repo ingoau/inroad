@@ -3,7 +3,8 @@ import type { Attachment, Brief, DraftRef, EmailComment, Recipient } from '../..
 export type { Attachment, Brief, Recipient }
 
 // researched: the campaign is research-only, so there's a brief but no email yet.
-export type Status = 'queued' | 'researching' | 'researched' | 'drafted' | 'edited' | 'saved' | 'failed'
+// sent: the saved draft turned up in the mailbox's Sent folder (or you said so).
+export type Status = 'queued' | 'researching' | 'researched' | 'drafted' | 'edited' | 'saved' | 'sent' | 'failed'
 
 export interface Proposal {
   id: string
@@ -34,12 +35,16 @@ export interface ChatMsg {
 
 // Whether the email can be edited, chatted about and saved: there's a draft,
 // or (research-only campaigns) research is done and the user writes it.
-export const hasEmail = (p: Prospect) => p.status === 'researched' || p.status === 'drafted' || p.status === 'edited' || p.status === 'saved'
+export const hasEmail = (p: Prospect) =>
+  p.status === 'researched' || p.status === 'drafted' || p.status === 'edited' || p.status === 'saved' || p.status === 'sent'
+
+// Saved and sent stick through edits and redrafts; there's a copy in the mailbox either way.
+export const isDone = (s: Status) => s === 'saved' || s === 'sent'
 
 // The status after the body changes. With no AI draft to compare against, an
 // empty email is still just "researched".
 export function statusAfter(p: Prospect, body: string): Status {
-  if (p.status === 'saved') return 'saved'
+  if (isDone(p.status)) return p.status
   if (!p.originalBody) return body.trim() ? 'edited' : 'researched'
   return body !== p.originalBody ? 'edited' : 'drafted'
 }
@@ -102,6 +107,15 @@ export interface Prospect {
   deletedAt?: number
   // The copy in the mailbox's Drafts folder, once saved there.
   draftRef?: DraftRef
+  // Set when the draft left Drafts but didn't turn up in Sent (deleted, or
+  // scheduled to send later). Cleared once it's found again.
+  draftMissing?: boolean
+  // When it was sent: spotted in the Sent folder, or marked by hand.
+  sentAt?: number
+  // What you noted when marking it sent, e.g. "through their contact form".
+  sentNote?: string
+  // Out of the way of the work still to do; sending archives it. Cleared to unarchive.
+  archivedAt?: number
 }
 
 // A group of campaigns that share context, e.g. one event with Venues and
