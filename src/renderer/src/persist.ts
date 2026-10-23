@@ -73,13 +73,22 @@ function withMarkdown(state: SavedState): SavedState {
 export const upgrade = (state: SavedState) => withMarkdown(withFolders(state))
 
 // Claude work doesn't survive a restart: research that was running goes back
-// in the queue, and a chat reply that was being written is marked as cut off.
+// in the queue, a chat reply that was being written is marked as cut off, and
+// so is a search for organisations.
 function resume(saved: SavedState): SavedState {
   const state = upgrade(saved)
   return {
     ...state,
     // Older saves stored attachments as bare file names with no file behind them.
-    campaigns: state.campaigns.map((c) => ({ ...c, attachments: c.attachments.filter((a) => typeof a === 'object') })),
+    campaigns: state.campaigns.map((c) => ({
+      ...c,
+      attachments: c.attachments.filter((a) => typeof a === 'object'),
+      // A search that was running is cut off; what it found so far stays.
+      discovery: c.discovery && {
+        ...c.discovery,
+        rounds: c.discovery.rounds.map((r) => (r.status === 'searching' ? { ...r, status: 'failed', error: 'Interrupted when Inroad closed.' } : r)),
+      },
+    })),
     voices: state.voices.map((v) => ({ ...v, examples: v.examples?.map((e) => ({ ...e, id: e.id ?? crypto.randomUUID(), at: e.at ?? Date.now() })) })),
     prospects: state.prospects.map((p) => ({
       ...p,

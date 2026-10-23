@@ -5,7 +5,7 @@ import type { ChatRequest, ClaudeProgress, DraftInput, Result } from '../shared/
 import * as ai from './ai'
 import { configureClaude } from './claude'
 import { attachmentFile, pickAttachments, readChatFile, saveChatFile } from './files'
-import { deleteDraft, saveDraft, testMail, type MailCreds } from './mail'
+import { checkSent, deleteDraft, saveDraft, testMail, type MailCreds } from './mail'
 import { getAiConfig, getPublicSettings, getSecrets, updateSettings } from './settings'
 import { loadState, saveState } from './store'
 
@@ -107,6 +107,7 @@ app.whenReady().then(() => {
   ipcMain.handle('claude:cancel', (_e, jobId: string) => running.get(jobId)?.abort())
   ipcMain.handle('claude:applyEventAnswers', async (_e, req) => ai.applyEventAnswers(await config(), req))
   ipcMain.handle('claude:writingRules', async (_e, req) => ai.writingRules(await config(), req))
+  ipcMain.handle('claude:discover', async (e, req) => stoppable(req.jobId, async (abort) => ai.discover(await config(), req, emitTo(e.sender), abort)))
   ipcMain.handle('claude:parseOrganisations', async (_e, text: string) => ai.parseOrganisations(await config(), text))
   ipcMain.handle('mail:test', () => withMail((c) => testMail(c)))
   ipcMain.handle('mail:saveDraft', (_e, draft: DraftInput) =>
@@ -123,6 +124,7 @@ app.whenReady().then(() => {
   ipcMain.handle('files:saveChatFile', (_e, file) => saveChatFile(file))
   ipcMain.handle('files:pickAttachments', (e) => pickAttachments(BrowserWindow.fromWebContents(e.sender)))
   ipcMain.handle('mail:deleteDraft', (_e, ref) => withMail((c) => deleteDraft(c, ref)))
+  ipcMain.handle('mail:checkSent', (_e, checks) => withMail((c) => checkSent(c, checks)))
 
   createWindow()
   app.on('activate', () => {

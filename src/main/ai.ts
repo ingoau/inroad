@@ -1,8 +1,10 @@
 import type {
+  Candidate,
   ChatRequest,
   ChatResult,
   ClaudeProgress,
   DraftRequest,
+  DiscoverRequest,
   DraftResult,
   EventAnswersRequest,
   EventLookupRequest,
@@ -60,4 +62,8 @@ export function writingRules(cfg: AiConfig, req: WritingRulesRequest): Promise<R
 
 export function parseOrganisations(cfg: AiConfig, text: string): Promise<Result<ParsedOrganisation[]>> {
   return cfg.provider === 'opencode' ? opencode.parseOrganisations(cfg.opencode, text) : claude.parseOrganisations(cfg.claude, text)
+}
+
+export function discover(cfg: AiConfig, req: DiscoverRequest, emit: Emit, abort?: AbortController): Promise<Result<Candidate[]>> {
+  return cfg.provider === 'opencode' ? opencode.discover(cfg.opencode, req, emit, abort) : claude.discover(cfg.claude, req, emit, abort)
 }

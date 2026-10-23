@@ -46,6 +46,9 @@ export interface ResearchRequest extends EmailGuidance {
   senderName: string
   // False to research and write the brief only, leaving the email for later.
   draft?: boolean
+  // Why "Find with AI" suggested this organisation, with sources: a head start
+  // for research, not instructions.
+  discovery?: string
 }
 
 export interface ResearchResult {
@@ -180,6 +183,29 @@ export interface ParsedOrganisation {
   note: string
 }
 
+// Adding organisations: "Find with AI" searches for organisations that suit
+// the campaign, one round per query.
+export interface DiscoverRequest {
+  jobId: string
+  query: string
+  campaignNotes: string
+  // Already in the campaign, already suggested or dismissed: don't suggest again.
+  exclude: string[]
+  // Earlier queries in this search, oldest first, so "10 more" or "Australian
+  // only" can build on them.
+  earlier: string[]
+}
+
+export interface Candidate {
+  name: string
+  // '' if none was found.
+  website: string
+  // One line on why they suit this campaign.
+  why: string
+  fit: 'strong' | 'possible'
+  sources: { title: string; url: string }[]
+}
+
 export interface VoiceLearnRequest {
   voiceName: string
   notes: string[]
@@ -194,7 +220,9 @@ export interface VoiceLearnResult {
 }
 
 // Streamed while a request runs: research steps, or chat text as it arrives.
-export type ClaudeProgress = { jobId: string; kind: 'step'; text: string } | { jobId: string; kind: 'delta'; text: string }
+// Discovery also streams each organisation as it's found.
+export type ClaudeProgress =
+  { jobId: string; kind: 'step'; text: string } | { jobId: string; kind: 'delta'; text: string } | { jobId: string; kind: 'candidate'; candidate: Candidate }
 
 export interface MailSettings {
   host: string
@@ -276,9 +304,25 @@ export interface DraftInput {
 export interface DraftRef {
   mailbox: string
   messageId: string
+  // When it reached the mailbox. Missing on drafts saved by older versions.
+  savedAt?: number
 }
 
-export type Result<T> = { ok: true; value: T } | { ok: false; error: string }
+// A saved draft to look for: still in Drafts, or sent from the mail app.
+export interface SentCheck {
+  id: string
+  ref: DraftRef
+  // Who the draft was to, for spotting the sent copy when the mail app gave it a new Message-ID.
+  to: string[]
+  // When the draft was saved; anything sent to them before then isn't it.
+  savedAt: number
+}
+
+// draft: still in Drafts. sent: found in the Sent folder (at: when it was sent).
+// missing: gone from Drafts but not in Sent, so deleted, scheduled or still sending.
+export type SentState = { state: 'draft' } | { state: 'sent'; at: number } | { state: 'missing' }
+
+export type Result<T> ={ ok: true; value: T } | { ok: false; error: string }
 
 export interface InroadApi {
   // process.platform, e.g. 'darwin'.
@@ -305,7 +349,9 @@ export interface InroadApi {
     applyEventAnswers: (req: EventAnswersRequest) => Promise<Result<{ details: string }>>
     writingRules: (req: WritingRulesRequest) => Promise<Result<{ notes: string[] }>>
     parseOrganisations: (text: string) => Promise<Result<ParsedOrganisation[]>>
-    // Stops a running research, chat or event lookup by its jobId.
+    // Every organisation found, including those already streamed as progress.
+    discover: (req: DiscoverRequest) => Promise<Result<Candidate[]>>
+    // Stops a running research, chat, discovery or event lookup by its jobId.
     cancel: (jobId: string) => Promise<void>
     // Subscribe to progress for running requests; returns an unsubscribe function.
     onProgress: (cb: (p: ClaudeProgress) => void) => () => void
@@ -321,5 +367,8 @@ export interface InroadApi {
     test: () => Promise<Result<{ draftsMailbox: string }>>
     saveDraft: (draft: DraftInput) => Promise<Result<DraftRef>>
     deleteDraft: (ref: DraftRef) => Promise<Result<null>>
+    // Looks each draft up in Drafts and then Sent, by id. Ones it can't decide
+    // (e.g. no Sent folder) are left out.
+    checkSent: (checks: SentCheck[]) => Promise<Result<Record<string, SentState>>>
   }
 }
