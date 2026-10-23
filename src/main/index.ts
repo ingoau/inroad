@@ -1,10 +1,10 @@
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import { join } from 'node:path'
-import type { ClaudeProgress, DraftInput, Result } from '../shared/api'
+import type { ChatRequest, ClaudeProgress, DraftInput, Result } from '../shared/api'
 import * as ai from './ai'
 import { configureClaude } from './claude'
-import { attachmentFile, pickAttachments } from './files'
+import { attachmentFile, pickAttachments, readChatFile, saveChatFile } from './files'
 import { deleteDraft, saveDraft, testMail, type MailCreds } from './mail'
 import { getAiConfig, getPublicSettings, getSecrets, updateSettings } from './settings'
 import { loadState, saveState } from './store'
@@ -91,7 +91,17 @@ app.whenReady().then(() => {
   ipcMain.handle('claude:test', async () => ai.test(await config()))
   ipcMain.handle('claude:research', async (e, req) => stoppable(req.jobId, async (abort) => ai.researchAndDraft(await config(), req, emitTo(e.sender), abort)))
   ipcMain.handle('claude:draft', async (_e, req) => ai.draft(await config(), req))
-  ipcMain.handle('claude:chat', async (e, req) => stoppable(req.jobId, async (abort) => ai.chat(await config(), req, emitTo(e.sender), abort)))
+  ipcMain.handle('claude:chat', async (e, req: ChatRequest) =>
+    stoppable(req.jobId, async (abort) => {
+      let files
+      try {
+        files = await Promise.all((req.files ?? []).map(readChatFile))
+      } catch (err) {
+        return { ok: false, error: (err as Error).message }
+      }
+      return ai.chat(await config(), req, files, emitTo(e.sender), abort)
+    }),
+  )
   ipcMain.handle('claude:learnVoice', async (_e, req) => ai.learnVoice(await config(), req))
   ipcMain.handle('claude:lookupEvent', async (e, req) => stoppable(req.jobId, async (abort) => ai.lookupEvent(await config(), req, emitTo(e.sender), abort)))
   ipcMain.handle('claude:cancel', (_e, jobId: string) => running.get(jobId)?.abort())
@@ -110,6 +120,7 @@ app.whenReady().then(() => {
       return saveDraft(c, draft, files)
     }),
   )
+  ipcMain.handle('files:saveChatFile', (_e, file) => saveChatFile(file))
   ipcMain.handle('files:pickAttachments', (e) => pickAttachments(BrowserWindow.fromWebContents(e.sender)))
   ipcMain.handle('mail:deleteDraft', (_e, ref) => withMail((c) => deleteDraft(c, ref)))
 

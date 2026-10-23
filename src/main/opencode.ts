@@ -23,6 +23,7 @@ import type {
   VoiceLearnResult,
   WritingRulesRequest,
 } from '../shared/api'
+import type { ChatFileData } from '../shared/chatFiles'
 import type { AiConfig } from './settings'
 
 // Runs Inroad's agent tasks through the opencode CLI instead of the Claude
@@ -91,12 +92,14 @@ interface Handlers {
 
 // Spawns `opencode run` with the prompt on stdin and collects its output.
 // Events: step_start / text / tool_use / step_finish / error. Aborting `signal`
-// kills the process and rejects with STOPPED.
-async function run(cfg: OpencodeConfig, prompt: string, handlers: Handlers = {}, signal?: AbortSignal): Promise<string> {
+// kills the process and rejects with STOPPED. `files` are attached to the
+// message by path (opencode reads them itself, not through the agent's tools).
+async function run(cfg: OpencodeConfig, prompt: string, handlers: Handlers = {}, signal?: AbortSignal, files: string[] = []): Promise<string> {
   ensureProjectConfig(cfg.workspace)
   const args = ['run', '--format', 'json', '--dir', cfg.workspace]
   if (cfg.model) args.push('-m', cfg.model)
   if (cfg.agent) args.push('--agent', cfg.agent)
+  for (const f of files) args.push('--file', f)
 
   let text = ''
   let stderr = ''
@@ -405,6 +408,8 @@ The email body is markdown, exactly as stored: ${MARKDOWN} Links and formatting 
 
 The user may point at a passage they highlighted in the email; it's quoted with their message. Read it as "this part", and keep any edits to it unless they ask for more.
 
+The user can attach files to their messages: images (screenshots, photos, flyers), PDFs and text files. They're attached to this message (text files are included inline, labelled with their name), and the messages that attached them say so. Use them as the user intends, e.g. a screenshot of an email thread to reply to, a prospectus to draw facts from, or a photo to describe.
+
 To change the email, quote the exact text to replace (copied verbatim from the subject or body, long enough to be unique, within a single paragraph) and give the replacement. To delete something, quote it with a few surrounding words and leave those words in the replacement. Prefer a few focused edits over rewriting everything, and stay in the user's voice. When the user asks what you think, wants something checked, or asks why something is there, pin a comment to the phrase it's about rather than only describing it in your reply. Don't repeat comments the email already has. Only search the web if the user asks for something the brief doesn't cover. Keep your messages short.
 
 When you have edits or comments, end your reply with ONE fenced JSON block in exactly this shape and nothing after it:
@@ -448,10 +453,15 @@ function takeEdits(
   return { text: cleaned, proposals, comments }
 }
 
-export async function chat(cfg: OpencodeConfig, req: ChatRequest, emit: Emit, abort?: AbortController): Promise<Result<ChatResult>> {
+export async function chat(cfg: OpencodeConfig, req: ChatRequest, files: ChatFileData[], emit: Emit, abort?: AbortController): Promise<Result<ChatResult>> {
   return guard(async () => {
+    // Images and PDFs go to opencode by path; text files are simplest inline.
+    const texts = files
+      .filter((f) => f.kind === 'text')
+      .map((f) => `<attached_file name="${f.name}">\n${f.data}${f.truncated ? '\n[…cut off here: the file is longer]' : ''}\n</attached_file>`)
     const context = [
       CHAT_SYSTEM,
+      ...texts,
       `<campaign_notes>\n${req.campaignNotes || '(none)'}\n</campaign_notes>`,
       ...guidanceSections(req),
       voiceSection(req.voice),
@@ -486,6 +496,7 @@ export async function chat(cfg: OpencodeConfig, req: ChatRequest, emit: Emit, ab
           },
         },
         abort?.signal,
+        files.filter((f) => f.kind !== 'text').map((f) => f.path),
       )
     } catch (err) {
       // Stopped by the user: keep what was written so far.

@@ -30,6 +30,7 @@ const api: InroadApi = {
   },
   files: {
     pickAttachments: () => ipcRenderer.invoke('files:pickAttachments'),
+    saveChatFile: (file) => ipcRenderer.invoke('files:saveChatFile', file),
   },
   mail: {
     test: () => ipcRenderer.invoke('mail:test'),

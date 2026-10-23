@@ -103,6 +103,24 @@ export interface ChatRequest extends EmailGuidance {
   message: string
   // A passage of the email the user highlighted to ask about.
   quote?: string
+  // Files attached anywhere in this chat, oldest first; the AI sees all of them.
+  files?: ChatFile[]
+}
+
+// A file attached to a chat message: an image, PDF or text file. Stored in
+// Inroad's own folder like campaign attachments; the renderer passes back only
+// { id, name }.
+export interface ChatFile {
+  id: string
+  name: string
+  size: number
+  mime: string
+}
+
+export interface ChatFileUpload {
+  name: string
+  mime: string
+  data: ArrayBuffer
 }
 
 export interface ProposedEdit {
@@ -295,6 +313,8 @@ export interface InroadApi {
   files: {
     // Opens the system file picker; resolves to [] if cancelled.
     pickAttachments: () => Promise<Attachment[]>
+    // Stores a file for the chat (already read, and images shrunk, by the renderer).
+    saveChatFile: (file: ChatFileUpload) => Promise<Result<ChatFile>>
   }
   mail: {
     // Connects with the saved settings and reports the Drafts folder it found.

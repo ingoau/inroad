@@ -15,6 +15,7 @@ import type {
   VoiceLearnResult,
   WritingRulesRequest,
 } from '../shared/api'
+import type { ChatFileData } from '../shared/chatFiles'
 import * as claude from './claude'
 import * as opencode from './opencode'
 import type { AiConfig } from './settings'
@@ -37,8 +38,8 @@ export function draft(cfg: AiConfig, req: DraftRequest): Promise<Result<DraftRes
   return cfg.provider === 'opencode' ? opencode.draft(cfg.opencode, req) : claude.draft(cfg.claude, req)
 }
 
-export function chat(cfg: AiConfig, req: ChatRequest, emit: Emit, abort?: AbortController): Promise<Result<ChatResult>> {
-  return cfg.provider === 'opencode' ? opencode.chat(cfg.opencode, req, emit, abort) : claude.chat(cfg.claude, req, emit, abort)
+export function chat(cfg: AiConfig, req: ChatRequest, files: ChatFileData[], emit: Emit, abort?: AbortController): Promise<Result<ChatResult>> {
+  return cfg.provider === 'opencode' ? opencode.chat(cfg.opencode, req, files, emit, abort) : claude.chat(cfg.claude, req, files, emit, abort)
 }
 
 export function learnVoice(cfg: AiConfig, req: VoiceLearnRequest): Promise<Result<VoiceLearnResult>> {

@@ -1,7 +1,8 @@
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
 import Markdown from 'react-markdown'
-import { Loader2, X } from 'lucide-react'
+import { FileText, Loader2, Paperclip, X } from 'lucide-react'
+import { toast } from 'sonner'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   DropdownMenu,
@@ -14,6 +15,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { hasEmail, type ChatMsg, type ChatThread, type Proposal, type Prospect } from '../data'
 import { plainText } from '../markdown'
+import { attachChatFile, CHAT_FILE_ACCEPT, type ChatAttachment } from '../chatFiles'
 import { Shortcut } from './hint'
 
 export type Tab = 'brief' | 'chat'
@@ -29,7 +31,7 @@ interface Props {
   // Accept or reject every pending suggestion in one reply.
   onProposalsAll: (msgId: string, accept: boolean) => void
   onRevertProposal: (msgId: string, proposalId: string) => void
-  onSend: (text: string) => void
+  onSend: (text: string, files?: ChatAttachment[]) => void
   // Stops the reply being written.
   onStop: () => void
   // A passage of the email to ask about, attached to the next message.
@@ -268,10 +270,26 @@ function ChatView({ prospect: p, onProposal, onProposalsAll, onRevertProposal, o
   const ready = hasEmail(p)
   const replying = messages.some((m) => m.pending)
 
+  // Files waiting to go with the next message, and how many are still being stored.
+  const [files, setFiles] = useState<ChatAttachment[]>([])
+  const [uploading, setUploading] = useState(0)
+  const [dragging, setDragging] = useState(false)
+  const pickerRef = useRef<HTMLInputElement>(null)
+  const attach = (list: File[]) => {
+    if (!ready || !list.length) return
+    setUploading((n) => n + list.length)
+    for (const file of list)
+      attachChatFile(file)
+        .then((res) => (res.ok ? setFiles((fs) => [...fs, res.value]) : toast(res.error, { id: 'app' })))
+        .catch(() => toast(`Couldn’t attach “${file.name}”.`, { id: 'app' }))
+        .finally(() => setUploading((n) => n - 1))
+  }
+
   const send = () => {
-    if (!draft.trim() || !ready || replying) return
-    onSend(draft.trim())
+    if ((!draft.trim() && !files.length) || !ready || replying || uploading) return
+    onSend(draft.trim(), files)
     setDraft('')
+    setFiles([])
   }
 
   return (
@@ -296,6 +314,13 @@ function ChatView({ prospect: p, onProposal, onProposalsAll, onRevertProposal, o
           {messages.map((m) =>
             m.role === 'user' ? (
               <div key={m.id} className="ml-auto w-fit max-w-[85%] text-right whitespace-pre-wrap">
+                {m.files && m.files.length > 0 && (
+                  <div className="mb-1.5 flex flex-wrap justify-end gap-1.5">
+                    {m.files.map((f) => (
+                      <FileChip key={f.id} file={f} large />
+                    ))}
+                  </div>
+                )}
                 {m.quote && <div className="mb-0.5 line-clamp-2 text-xs text-muted-foreground">“{m.quote}”</div>}
                 {m.text}
               </div>
@@ -354,31 +379,111 @@ function ChatView({ prospect: p, onProposal, onProposalsAll, onRevertProposal, o
             </button>
           </div>
         )}
-        <textarea
-          id="chat-input"
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault()
-              send()
-            }
+        <div
+          onDragOver={(e) => {
+            if (!ready || !e.dataTransfer.types.includes('Files')) return
+            e.preventDefault()
+            setDragging(true)
           }}
-          disabled={!ready}
-          rows={2}
-          placeholder={!ready ? 'Waiting for the research…' : quote ? 'Ask about the highlighted part…' : 'Ask or tell the AI what to change…'}
-          className="field-sizing-content max-h-40 min-h-16 w-full resize-none rounded-xl bg-muted/60 px-3.5 py-3 outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
-        />
-        <p className="mt-1.5 text-xs text-muted-foreground/70">
-          {replying ? (
-            <button onClick={onStop} className="hover:text-foreground">
-              Stop <span className="text-muted-foreground/60">esc</span>
-            </button>
-          ) : (
-            '↵ send · ⇧↵ new line · ⌘N new chat'
+          onDragLeave={(e) => !e.currentTarget.contains(e.relatedTarget as Node) && setDragging(false)}
+          onDrop={(e) => {
+            setDragging(false)
+            if (!e.dataTransfer.files.length) return
+            e.preventDefault()
+            attach(Array.from(e.dataTransfer.files))
+          }}
+          className={cn('rounded-xl bg-muted/60 transition-shadow', dragging && 'ring-2 ring-ring/50', !ready && 'opacity-50')}
+        >
+          {(files.length > 0 || uploading > 0) && (
+            <div className="flex flex-wrap gap-1.5 px-3 pt-3">
+              {files.map((f) => (
+                <FileChip key={f.id} file={f} onRemove={() => setFiles((fs) => fs.filter((x) => x.id !== f.id))} />
+              ))}
+              {Array.from({ length: uploading }, (_, i) => (
+                <div key={i} className="flex size-12 items-center justify-center rounded-lg bg-background/60">
+                  <Loader2 className="size-3.5 animate-spin text-muted-foreground" />
+                </div>
+              ))}
+            </div>
           )}
-        </p>
+          <textarea
+            id="chat-input"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault()
+                send()
+              }
+            }}
+            // A pasted screenshot or copied file attaches; pasted text pastes as usual.
+            onPaste={(e) => {
+              const pasted = Array.from(e.clipboardData.files)
+              if (!pasted.length || e.clipboardData.getData('text/plain')) return
+              e.preventDefault()
+              attach(pasted)
+            }}
+            disabled={!ready}
+            rows={2}
+            placeholder={
+              !ready ? 'Waiting for the research…' : quote ? 'Ask about the highlighted part…' : files.length ? 'Say what to do with it…' : 'Ask or tell the AI what to change…'
+            }
+            className="field-sizing-content block max-h-40 min-h-16 w-full resize-none bg-transparent px-3.5 py-3 outline-none placeholder:text-muted-foreground/70"
+          />
+        </div>
+        <div className="mt-1.5 flex items-baseline gap-3 text-xs text-muted-foreground/70">
+          <p className="min-w-0 flex-1 truncate">
+            {replying ? (
+              <button onClick={onStop} className="hover:text-foreground">
+                Stop <span className="text-muted-foreground/60">esc</span>
+              </button>
+            ) : (
+              '↵ send · ⇧↵ new line · ⌘N new chat'
+            )}
+          </p>
+          {ready && (
+            <button onClick={() => pickerRef.current?.click()} title="Attach images, PDFs or text files. You can also paste or drop them here." className="flex shrink-0 items-center gap-1 hover:text-foreground">
+              <Paperclip className="size-3" /> Attach
+            </button>
+          )}
+          <input
+            ref={pickerRef}
+            type="file"
+            multiple
+            accept={CHAT_FILE_ACCEPT}
+            className="hidden"
+            onChange={(e) => {
+              attach(Array.from(e.target.files ?? []))
+              e.target.value = ''
+            }}
+          />
+        </div>
       </div>
     </>
+  )
+}
+
+// An attached file: a thumbnail for images, a name for everything else.
+function FileChip({ file: f, large, onRemove }: { file: ChatAttachment; large?: boolean; onRemove?: () => void }) {
+  return (
+    <div className="group relative" title={f.name}>
+      {f.thumb ? (
+        <img src={f.thumb} alt={f.name} className={cn('rounded-lg object-cover', large ? 'max-h-32 max-w-48' : 'size-12')} />
+      ) : (
+        <div className={cn('flex max-w-48 items-center gap-1.5 rounded-lg bg-background/60 px-2.5 text-xs', large ? 'bg-muted/60 py-2' : 'h-12')}>
+          <FileText className="size-3.5 shrink-0 text-muted-foreground" />
+          <span className="truncate">{f.name}</span>
+        </div>
+      )}
+      {onRemove && (
+        <button
+          onClick={onRemove}
+          title="Remove"
+          className="absolute -top-1.5 -right-1.5 hidden rounded-full bg-foreground p-0.5 text-background group-hover:block focus-visible:block"
+        >
+          <X className="size-3" />
+        </button>
+      )}
+    </div>
   )
 }

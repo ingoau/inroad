@@ -1,4 +1,5 @@
 import type { Attachment, Brief, DraftRef, EmailComment, Recipient } from '../../shared/api'
+import type { ChatAttachment } from './chatFiles'
 
 export type { Attachment, Brief, Recipient }
 
@@ -19,6 +20,8 @@ export interface ChatMsg {
   text: string
   // The passage of the email the user highlighted to ask about.
   quote?: string
+  // Images, PDFs and text files the user attached.
+  files?: ChatAttachment[]
   proposals?: Proposal[]
   // Comments this reply pinned to the email (also stored on the prospect).
   comments?: EmailComment[]
