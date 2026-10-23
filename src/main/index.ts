@@ -97,6 +97,7 @@ app.whenReady().then(() => {
   ipcMain.handle('claude:cancel', (_e, jobId: string) => running.get(jobId)?.abort())
   ipcMain.handle('claude:applyEventAnswers', async (_e, req) => ai.applyEventAnswers(await config(), req))
   ipcMain.handle('claude:writingRules', async (_e, req) => ai.writingRules(await config(), req))
+  ipcMain.handle('claude:discover', async (e, req) => stoppable(req.jobId, async (abort) => ai.discover(await config(), req, emitTo(e.sender), abort)))
   ipcMain.handle('claude:parseOrganisations', async (_e, text: string) => ai.parseOrganisations(await config(), text))
   ipcMain.handle('mail:test', () => withMail((c) => testMail(c)))
   ipcMain.handle('mail:saveDraft', (_e, draft: DraftInput) =>

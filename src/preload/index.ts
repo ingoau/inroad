@@ -21,6 +21,7 @@ const api: InroadApi = {
     applyEventAnswers: (req) => ipcRenderer.invoke('claude:applyEventAnswers', req),
     writingRules: (req) => ipcRenderer.invoke('claude:writingRules', req),
     parseOrganisations: (text) => ipcRenderer.invoke('claude:parseOrganisations', text),
+    discover: (req) => ipcRenderer.invoke('claude:discover', req),
     cancel: (jobId) => ipcRenderer.invoke('claude:cancel', jobId),
     onProgress: (cb) => {
       const listener = (_e: Electron.IpcRendererEvent, p: ClaudeProgress) => cb(p)

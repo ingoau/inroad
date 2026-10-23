@@ -1,6 +1,6 @@
-import type { Attachment, Brief, DraftRef, EmailComment, Recipient } from '../../shared/api'
+import type { Attachment, Brief, Candidate, DraftRef, EmailComment, Recipient } from '../../shared/api'
 
-export type { Attachment, Brief, Recipient }
+export type { Attachment, Brief, Candidate, Recipient }
 
 // researched: the campaign is research-only, so there's a brief but no email yet.
 export type Status = 'queued' | 'researching' | 'researched' | 'drafted' | 'edited' | 'saved' | 'failed'
@@ -81,6 +81,8 @@ export interface Prospect {
   // What the user said about this organisation ("mention they sponsored
   // Campfire"). Claude follows it for research, drafting and chat.
   note?: string
+  // Why "Find with AI" suggested it, with sources. Research starts from this.
+  discovery?: string
   status: Status
   progress: string[]
   error?: string
@@ -133,7 +135,27 @@ export interface Campaign {
   // draft it on request. New campaigns start this way; older saves without
   // the field kept drafting automatically.
   researchOnly?: boolean
+  // "Find with AI" on the Add page. Kept on the campaign so it carries on
+  // while you look at emails, and is still there next time.
+  discovery?: Discovery
   deletedAt?: number
+}
+
+// One search for organisations and its follow-ups ("10 more", "Australian only").
+export interface Discovery {
+  rounds: DiscoveryRound[]
+  // Names the user said no to; they're hidden and never suggested again.
+  dismissed: string[]
+}
+
+export interface DiscoveryRound {
+  id: string
+  query: string
+  status: 'searching' | 'done' | 'stopped' | 'failed'
+  // What the agent did, e.g. "Read unihack.net/sponsors".
+  steps: string[]
+  candidates: Candidate[]
+  error?: string
 }
 
 // Reusable text for the email editor, inserted by typing "/". Available

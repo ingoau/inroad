@@ -46,6 +46,9 @@ export interface ResearchRequest extends EmailGuidance {
   senderName: string
   // False to research and write the brief only, leaving the email for later.
   draft?: boolean
+  // Why "Find with AI" suggested this organisation, with sources: a head start
+  // for research, not instructions.
+  discovery?: string
 }
 
 export interface ResearchResult {
@@ -162,6 +165,29 @@ export interface ParsedOrganisation {
   note: string
 }
 
+// Adding organisations: "Find with AI" searches for organisations that suit
+// the campaign, one round per query.
+export interface DiscoverRequest {
+  jobId: string
+  query: string
+  campaignNotes: string
+  // Already in the campaign, already suggested or dismissed: don't suggest again.
+  exclude: string[]
+  // Earlier queries in this search, oldest first, so "10 more" or "Australian
+  // only" can build on them.
+  earlier: string[]
+}
+
+export interface Candidate {
+  name: string
+  // '' if none was found.
+  website: string
+  // One line on why they suit this campaign.
+  why: string
+  fit: 'strong' | 'possible'
+  sources: { title: string; url: string }[]
+}
+
 export interface VoiceLearnRequest {
   voiceName: string
   notes: string[]
@@ -176,7 +202,9 @@ export interface VoiceLearnResult {
 }
 
 // Streamed while a request runs: research steps, or chat text as it arrives.
-export type ClaudeProgress = { jobId: string; kind: 'step'; text: string } | { jobId: string; kind: 'delta'; text: string }
+// Discovery also streams each organisation as it's found.
+export type ClaudeProgress =
+  { jobId: string; kind: 'step'; text: string } | { jobId: string; kind: 'delta'; text: string } | { jobId: string; kind: 'candidate'; candidate: Candidate }
 
 export interface MailSettings {
   host: string
@@ -287,7 +315,9 @@ export interface InroadApi {
     applyEventAnswers: (req: EventAnswersRequest) => Promise<Result<{ details: string }>>
     writingRules: (req: WritingRulesRequest) => Promise<Result<{ notes: string[] }>>
     parseOrganisations: (text: string) => Promise<Result<ParsedOrganisation[]>>
-    // Stops a running research, chat or event lookup by its jobId.
+    // Every organisation found, including those already streamed as progress.
+    discover: (req: DiscoverRequest) => Promise<Result<Candidate[]>>
+    // Stops a running research, chat, discovery or event lookup by its jobId.
     cancel: (jobId: string) => Promise<void>
     // Subscribe to progress for running requests; returns an unsubscribe function.
     onProgress: (cb: (p: ClaudeProgress) => void) => () => void
