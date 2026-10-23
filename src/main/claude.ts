@@ -22,7 +22,7 @@ import type {
   VoiceLearnResult,
   WritingRulesRequest,
 } from '../shared/api'
-import type { ChatFileData } from '../shared/chatFiles'
+import { attachedText, type ChatFileData } from '../shared/chatFiles'
 
 // Inroad drives Claude through the Claude Agent SDK (Claude Code as a library).
 // With no API key set it uses this machine's Claude Code login; with a key it
@@ -377,7 +377,7 @@ function fileBlocks(files: ChatFileData[]): Content {
     if (f.kind === 'image')
       return [label, { type: 'image', source: { type: 'base64', media_type: f.mime as 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp', data: f.data } }]
     if (f.kind === 'pdf') return [label, { type: 'document', title: f.name, source: { type: 'base64', media_type: 'application/pdf', data: f.data } }]
-    return [{ type: 'text', text: `<attached_file name="${f.name}">\n${f.data}${f.truncated ? '\n[…cut off here: the file is longer]' : ''}\n</attached_file>` }]
+    return [{ type: 'text', text: attachedText(f) }]
   })
 }
 

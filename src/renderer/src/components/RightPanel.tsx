@@ -275,12 +275,25 @@ function ChatView({ prospect: p, onProposal, onProposalsAll, onRevertProposal, o
   const [uploading, setUploading] = useState(0)
   const [dragging, setDragging] = useState(false)
   const pickerRef = useRef<HTMLInputElement>(null)
+  // Files belong to the chat they were attached in: switching email or chat
+  // drops them, along with uploads still running for the old one.
+  const target = `${p.id}/${thread?.id ?? ''}`
+  const targetRef = useRef(target)
+  useEffect(() => {
+    targetRef.current = target
+    setFiles([])
+  }, [target])
   const attach = (list: File[]) => {
     if (!ready || !list.length) return
+    const forTarget = target
     setUploading((n) => n + list.length)
     for (const file of list)
       attachChatFile(file)
-        .then((res) => (res.ok ? setFiles((fs) => [...fs, res.value]) : toast(res.error, { id: 'app' })))
+        .then((res) => {
+          if (targetRef.current !== forTarget) return
+          if (res.ok) setFiles((fs) => [...fs, res.value])
+          else toast(res.error, { id: 'app' })
+        })
         .catch(() => toast(`Couldn’t attach “${file.name}”.`, { id: 'app' }))
         .finally(() => setUploading((n) => n - 1))
   }
@@ -416,10 +429,13 @@ function ChatView({ prospect: p, onProposal, onProposalsAll, onRevertProposal, o
                 send()
               }
             }}
-            // A pasted screenshot or copied file attaches; pasted text pastes as usual.
+            // A pasted screenshot or copied file attaches; pasted text pastes as
+            // usual, including from apps that also put a picture of it on the
+            // clipboard. (Copying a file can put its name in text/plain too.)
             onPaste={(e) => {
               const pasted = Array.from(e.clipboardData.files)
-              if (!pasted.length || e.clipboardData.getData('text/plain')) return
+              const text = e.clipboardData.getData('text/plain').trim()
+              if (!pasted.length || (text && !pasted.some((f) => text.includes(f.name)))) return
               e.preventDefault()
               attach(pasted)
             }}

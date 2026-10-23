@@ -64,6 +64,7 @@ import {
 import type { ClaudeProgress, DraftRef, EmailComment, PublicSettings, VoiceInput } from '../../shared/api'
 import { firstRun, persist, upgrade, type SavedState } from './persist'
 import type { ChatAttachment } from './chatFiles'
+import { CHAT_TOTAL_MAX } from '../../shared/chatFiles'
 import { defaultEmailStyle, emailHtml, emailStyleVars, markdownToText, normalizeMarkdown, type EmailStyle } from './markdown'
 import { Onboarding, type OnboardingResult } from './components/Onboarding'
 import { currentEditor, historyDepth, undoBridge, type UndoEntry } from './undo'
@@ -1534,8 +1535,16 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     const quote = chatQuote?.pid === pid ? chatQuote.text : undefined
     if (quote) setChatQuote(null)
     const userMsg: ChatMsg = { id: crypto.randomUUID(), role: 'user', text, quote, ...(files.length ? { files } : {}) }
-    // Every turn starts afresh, so the AI gets all the files attached in this chat.
-    const chatFiles = [...thread.messages.flatMap((m) => m.files ?? []), ...files].map(({ id, name, size, mime }) => ({ id, name, size, mime }))
+    // Every turn starts afresh, so the AI gets the files attached in this chat:
+    // newest first up to the size cap, skipping any whose turn failed (a file
+    // the AI rejected would otherwise break every later message).
+    const earlier = thread.messages.flatMap((m, i) => (thread.messages[i + 1]?.error ? [] : (m.files ?? [])))
+    let budget = CHAT_TOTAL_MAX
+    const chatFiles = [...earlier, ...files]
+      .reverse()
+      .filter((f) => (budget -= f.size) >= 0)
+      .reverse()
+      .map(({ id, name, size, mime }) => ({ id, name, size, mime }))
     const reply: ChatMsg = { id: replyId, role: 'assistant', text: '', pending: true }
     update(pid, (q) => ({
       ...q,

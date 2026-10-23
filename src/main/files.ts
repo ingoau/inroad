@@ -3,7 +3,7 @@ import { copyFile, mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { app, BrowserWindow, dialog } from 'electron'
 import type { Attachment, ChatFile, ChatFileUpload, Result } from '../shared/api'
-import { CHAT_FILE_MAX, CHAT_TEXT_MAX, chatFileKind, type ChatFileData } from '../shared/chatFiles'
+import { CHAT_FILE_MAX, CHAT_TEXT_MAX, chatFileKind, sniffImage, withExtension, type ChatFileData } from '../shared/chatFiles'
 
 // Attachments are copied to userData/attachments/<id>/<name>. The renderer
 // only ever passes back { id, name }, never a path, so it can't point the
@@ -48,14 +48,19 @@ const chatRoot = () => join(app.getPath('userData'), 'chat-files')
 const safeName = (name: string) => basename(name.replace(/\\/g, '/')).replace(/^\.+/, '').replace(/[\u0000-\u001f]/g, '').slice(0, 120) || 'file'
 
 export async function saveChatFile(file: ChatFileUpload): Promise<Result<ChatFile>> {
-  const name = safeName(file.name)
-  if (!chatFileKind(file.mime, name)) return { ok: false, error: `The AI can’t read “${name}”. Attach an image, a PDF or a text file.` }
+  const bytes = new Uint8Array(file.data)
+  const kind = chatFileKind(file.mime, safeName(file.name))
+  if (!kind) return { ok: false, error: `The AI can’t read “${safeName(file.name)}”. Attach an image, a PDF or a text file.` }
+  // Trust the bytes over the extension for images.
+  const mime = kind === 'image' ? sniffImage(bytes) : kind === 'pdf' ? 'application/pdf' : file.mime
+  if (!mime) return { ok: false, error: `“${safeName(file.name)}” isn’t a PNG, JPEG, GIF or WebP image.` }
+  const name = safeName(withExtension(file.name, mime))
   const size = file.data.byteLength
   if (size > CHAT_FILE_MAX) return { ok: false, error: `“${name}” is too big to attach (the limit is ${CHAT_FILE_MAX / 1024 / 1024} MB).` }
   const id = randomUUID()
   await mkdir(join(chatRoot(), id), { recursive: true })
-  await writeFile(join(chatRoot(), id, name), Buffer.from(file.data))
-  return { ok: true, value: { id, name, size, mime: file.mime } }
+  await writeFile(join(chatRoot(), id, name), bytes)
+  return { ok: true, value: { id, name, size, mime } }
 }
 
 // Reads a stored chat file back for the AI. Throws if it's invalid or gone.
@@ -69,7 +74,12 @@ export async function readChatFile(f: ChatFile): Promise<ChatFileData> {
   } catch {
     throw new Error(`The file “${f.name}” attached to this chat is missing. Start a new chat to carry on.`)
   }
-  if (kind !== 'text') return { name: f.name, path, mime: kind === 'pdf' ? 'application/pdf' : f.mime, kind, data: buf.toString('base64') }
+  if (kind === 'image') {
+    const mime = sniffImage(buf)
+    if (!mime) throw new Error(`The file “${f.name}” isn’t an image the AI can read. Start a new chat to carry on.`)
+    return { name: f.name, path, mime, kind, data: buf.toString('base64') }
+  }
+  if (kind === 'pdf') return { name: f.name, path, mime: 'application/pdf', kind, data: buf.toString('base64') }
   const text = buf.toString('utf8')
   return { name: f.name, path, mime: f.mime, kind, data: text.slice(0, CHAT_TEXT_MAX), truncated: text.length > CHAT_TEXT_MAX }
 }

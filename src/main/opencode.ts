@@ -23,7 +23,7 @@ import type {
   VoiceLearnResult,
   WritingRulesRequest,
 } from '../shared/api'
-import type { ChatFileData } from '../shared/chatFiles'
+import { attachedText, type ChatFileData } from '../shared/chatFiles'
 import type { AiConfig } from './settings'
 
 // Runs Inroad's agent tasks through the opencode CLI instead of the Claude
@@ -456,9 +456,7 @@ function takeEdits(
 export async function chat(cfg: OpencodeConfig, req: ChatRequest, files: ChatFileData[], emit: Emit, abort?: AbortController): Promise<Result<ChatResult>> {
   return guard(async () => {
     // Images and PDFs go to opencode by path; text files are simplest inline.
-    const texts = files
-      .filter((f) => f.kind === 'text')
-      .map((f) => `<attached_file name="${f.name}">\n${f.data}${f.truncated ? '\n[…cut off here: the file is longer]' : ''}\n</attached_file>`)
+    const texts = files.filter((f) => f.kind === 'text').map(attachedText)
     const context = [
       CHAT_SYSTEM,
       ...texts,

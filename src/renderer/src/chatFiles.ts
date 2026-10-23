@@ -61,9 +61,8 @@ export async function attachChatFile(file: File): Promise<Result<ChatAttachment>
     img.close()
   }
   if (data.size > CHAT_FILE_MAX) return { ok: false, error: `“${name}” is too big to attach (the limit is ${CHAT_FILE_MAX / 1024 / 1024} MB).` }
-  // A re-encoded image gets the extension of its new format.
-  const stored = mime === file.type ? name : `${name.replace(/\.\w+$/, '')}.${mime === 'image/png' ? 'png' : 'jpg'}`
-  const saved = await window.api.files.saveChatFile({ name: stored, mime, data: await data.arrayBuffer() })
+  // Main checks the real format and fixes the extension to match.
+  const saved = await window.api.files.saveChatFile({ name, mime, data: await data.arrayBuffer() })
   return saved.ok ? { ok: true, value: { ...saved.value, thumb } } : saved
 }
 
