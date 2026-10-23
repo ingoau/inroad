@@ -1,8 +1,8 @@
 // Smoke test for src/main/claude.ts against the real Agent SDK. With no
 // ANTHROPIC_API_KEY it uses this machine's Claude Code sign-in.
-//   npx tsx scripts/test-claude.ts [test|research|brief|chat|stop|voice|rules|tools|parse|guided|comment|answers|event <name>]
+//   npx tsx scripts/test-claude.ts [test|research|brief|chat|files <png>|stop|voice|rules|tools|parse|guided|comment|answers|event <name>]
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -89,6 +89,7 @@ if (which === 'stop') {
       history: [],
       message: 'Write me a long explanation of every way this email could be improved.',
     },
+    [],
     log,
     abort,
   )
@@ -112,6 +113,7 @@ if (which === 'chat') {
       history: [],
       message: 'make the ask more casual and specific: Gold tier, $5k',
     },
+    [],
     log,
   )
   if (!r.ok) throw new Error(r.error)
@@ -119,6 +121,34 @@ if (which === 'chat') {
   console.log('  proposals:', r.value.proposals)
   assert.ok(r.value.proposals.length > 0, 'expected at least one propose_edit call')
   for (const p of r.value.proposals) assert.ok(body.includes(p.old), 'proposal quotes text that exists')
+}
+
+// files <image.png>: an image (that shows some text) and a text file, both attached.
+if (which === 'files') {
+  const image = process.argv[3]
+  assert.ok(image, 'pass a PNG to attach: files <image.png>')
+  const body = 'Hi Priya,\n\nWould you be open to sponsoring our hackathon?\n\nCheers,\nJordan'
+  const r = await chat(
+    cfg,
+    {
+      jobId: 'c4',
+      company: 'Lumen Labs',
+      campaignNotes: 'Asking for sponsorship.',
+      voice,
+      subject: 'Hack the Harbour',
+      body,
+      history: [],
+      message: 'What does the attached image say, and what is the tier in the notes file? Answer in one line.',
+    },
+    [
+      { name: 'shot.png', path: image, mime: 'image/png', kind: 'image', data: readFileSync(image).toString('base64') },
+      { name: 'notes.txt', path: '', mime: 'text/plain', kind: 'text', data: 'Tier we want from Lumen: Platinum.' },
+    ],
+    log,
+  )
+  if (!r.ok) throw new Error(r.error)
+  console.log('\n✓ chat:', r.value.text)
+  assert.match(r.value.text, /platinum/i, 'read the text file')
 }
 
 if (which === 'voice') {
@@ -226,6 +256,7 @@ if (which === 'comment') {
       history: [],
       message: 'anything in here I should double check before sending?',
     },
+    [],
     log,
   )
   if (!r.ok) throw new Error(r.error)

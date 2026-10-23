@@ -6,7 +6,7 @@ Research and draft personalised outreach emails in bulk, in your own voice. Buil
 
 - **Folders and campaigns.** A folder holds shared context (usually an event); each campaign inside it (Sponsors, Venues…) says what you're asking for.
 - **Research in the background.** Add organisations and the AI researches each one, writes a brief with sources and possible recipients, and drafts the email. Or make a campaign research-only and draft emails one at a time.
-- **Edit with AI.** A rich editor, plus a chat sidebar where the AI suggests edits you accept or reject, shown as tracked changes in the email. Highlight a passage to ask about it, and stop a reply any time.
+- **Edit with AI.** A rich editor, plus a chat sidebar where the AI suggests edits you accept or reject, shown as tracked changes in the email. Highlight a passage to ask about it, attach, paste or drop images, PDFs and text files, and stop a reply any time.
 - **Snippets.** Save text you reuse everywhere, per folder or per campaign, and type `/` in an email to insert it.
 - **Saves to your Drafts folder** over IMAP (Gmail, Fastmail, iCloud, Outlook or any IMAP server). Inroad never sends anything.
 - **Knows what's sent.** When a saved draft turns up in your Sent folder, Inroad marks it sent and archives it. For contact forms, copy the email and mark it as sent yourself, with a note on how. Archive anything else to get it out of the way.

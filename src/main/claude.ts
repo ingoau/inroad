@@ -1,4 +1,4 @@
-import { createSdkMcpServer, query, tool, type Options, type SDKMessage } from '@anthropic-ai/claude-agent-sdk'
+import { createSdkMcpServer, query, tool, type Options, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import { mkdirSync } from 'node:fs'
 import { z } from 'zod'
 import type {
@@ -24,6 +24,7 @@ import type {
   VoiceLearnResult,
   WritingRulesRequest,
 } from '../shared/api'
+import { attachedText, type ChatFileData } from '../shared/chatFiles'
 import { orgKey } from '../shared/org'
 
 // Inroad drives Claude through the Claude Agent SDK (Claude Code as a library).
@@ -86,12 +87,20 @@ const AUTH_ERRORS: Record<string, string> = {
 
 // Runs one agent query to completion: forwards progress, returns the final
 // result message, and turns SDK failures into messages a user can act on.
-// Aborting options.abortController stops it with STOPPED.
-async function run(prompt: string, options: Options, onMessage?: (m: SDKMessage) => void) {
+// Aborting options.abortController stops it with STOPPED. A prompt of content
+// blocks (text with images or documents) is sent as one streamed user message.
+type Content = Exclude<SDKUserMessage['message']['content'], string>
+async function run(prompt: string | Content, options: Options, onMessage?: (m: SDKMessage) => void) {
   let authError: string | undefined
   const stopped = () => options.abortController?.signal.aborted
+  const input =
+    typeof prompt === 'string'
+      ? prompt
+      : (async function* (): AsyncGenerator<SDKUserMessage> {
+          yield { type: 'user', message: { role: 'user', content: prompt }, parent_tool_use_id: null }
+        })()
   try {
-    for await (const message of query({ prompt, options })) {
+    for await (const message of query({ prompt: input, options })) {
       onMessage?.(message)
       if (message.type === 'assistant' && message.error) authError ??= AUTH_ERRORS[message.error]
       if (message.type === 'result') {
@@ -370,9 +379,23 @@ The email body is markdown, exactly as stored: ${MARKDOWN} Links and formatting 
 
 The user may point at a passage they highlighted in the email; it's quoted with their message. Read it as "this part", and keep any edits to it unless they ask for more.
 
+The user can attach files to their messages: images (screenshots, photos, flyers), PDFs and text files. Each comes before everything else, labelled with its file name, and the messages that attached them say so. Use them as the user intends, e.g. a screenshot of an email thread to reply to, a prospectus to draw facts from, or a photo to describe.
+
 To change the email, call the propose_edit tool: quote the exact text to replace (copied verbatim from the subject or body, long enough to be unique, within a single paragraph) and give the replacement. To delete something, quote it with a few surrounding words and leave those words in the replacement. Each call becomes a suggestion the user can accept or reject, so prefer a few focused edits over rewriting everything, and stay in the user's voice. When the user asks what you think, wants something checked, or asks why something is there, call add_comment to pin your answer to the phrase it's about rather than only describing it in your reply. Don't repeat comments the email already has. If the user asks for something the brief doesn't cover, look it up: WebSearch and WebFetch for the web, and their connected tools (Slack, email, docs, notes…) for anything about their own work or contacts. Only read and search with those tools; never send, post, create or change anything. Keep your messages short.`
 
-export async function chat(cfg: ClaudeConfig, req: ChatRequest, emit: Emit, abort?: AbortController): Promise<Result<ChatResult>> {
+// The chat's attached files as content blocks, each introduced by its name so
+// Claude can tell them apart and match them to the transcript.
+function fileBlocks(files: ChatFileData[]): Content {
+  return files.flatMap((f): Content => {
+    const label = { type: 'text', text: `Attached file “${f.name}”:` } as const
+    if (f.kind === 'image')
+      return [label, { type: 'image', source: { type: 'base64', media_type: f.mime as 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp', data: f.data } }]
+    if (f.kind === 'pdf') return [label, { type: 'document', title: f.name, source: { type: 'base64', media_type: 'application/pdf', data: f.data } }]
+    return [{ type: 'text', text: attachedText(f) }]
+  })
+}
+
+export async function chat(cfg: ClaudeConfig, req: ChatRequest, files: ChatFileData[], emit: Emit, abort?: AbortController): Promise<Result<ChatResult>> {
   return guard(async () => {
     const proposals: ProposedEdit[] = []
     // The tool doesn't edit anything itself: it records a suggestion for the
@@ -436,11 +459,12 @@ export async function chat(cfg: ClaudeConfig, req: ChatRequest, emit: Emit, abor
 
     const message = req.quote?.trim() ? `<highlighted_passage>\n${req.quote.trim()}\n</highlighted_passage>\n\nUser: ${req.message}` : `User: ${req.message}`
 
+    const prompt = `${context}\n\n${transcript}${message}`
     let text = ''
     let result
     try {
       result = await run(
-        `${context}\n\n${transcript}${message}`,
+        files.length ? [...fileBlocks(files), { type: 'text', text: prompt }] : prompt,
         baseOptions(cfg, {
           systemPrompt: CHAT_SYSTEM,
           mcpServers: { email: editor },

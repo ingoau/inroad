@@ -74,6 +74,8 @@ import {
 import type { ClaudeProgress, DraftRef, EmailComment, PublicSettings, SentCheck, VoiceInput } from '../../shared/api'
 import { orgKey } from '../../shared/org'
 import { firstRun, persist, upgrade, type SavedState } from './persist'
+import type { ChatAttachment } from './chatFiles'
+import { CHAT_TOTAL_MAX } from '../../shared/chatFiles'
 import { defaultEmailStyle, emailHtml, emailStyleVars, markdownToText, normalizeMarkdown, type EmailStyle } from './markdown'
 import { Onboarding, type OnboardingResult } from './components/Onboarding'
 import { currentEditor, historyDepth, undoBridge, type UndoEntry } from './undo'
@@ -1963,6 +1965,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
   const describe = (m: ChatMsg) =>
     [
       m.quote ? `[About this part of the email: “${m.quote}”]` : '',
+      m.files?.length ? `[Attached ${m.files.map((f) => `“${f.name}”`).join(', ')}]` : '',
       m.text,
       ...(m.proposals ?? []).map((x) => `[Suggested replacing “${x.old}” with “${x.new}” — ${x.state === 'pending' ? 'not yet decided' : x.state}]`),
       m.stopped ? '[The user stopped this reply here]' : '',
@@ -1978,21 +1981,31 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     openChat()
   }
 
-  const sendChat = async (text: string) => {
+  const sendChat = async (text: string, files: ChatAttachment[] = []) => {
     if (!selected) return
     const p = selected
     const pid = p.id
     const current = activeChat(p)
     if (current?.messages.some((m) => m.pending)) return
-    // No chat yet: start one, named after the first message.
-    const thread: ChatThread = current ?? { id: crypto.randomUUID(), title: text.slice(0, 40), createdAt: Date.now(), messages: [] }
+    // No chat yet: start one, named after the first message (or its file).
+    const title = (text || files[0]?.name || 'New chat').slice(0, 40)
+    const thread: ChatThread = current ?? { id: crypto.randomUUID(), title, createdAt: Date.now(), messages: [] }
     const chatId = thread.id
-    const title = thread.messages.length ? thread.title : text.slice(0, 40)
     const history = thread.messages.filter((m) => !m.error).map((m) => ({ role: m.role, text: describe(m) }))
     const replyId = crypto.randomUUID()
     const quote = chatQuote?.pid === pid ? chatQuote.text : undefined
     if (quote) setChatQuote(null)
-    const userMsg: ChatMsg = { id: crypto.randomUUID(), role: 'user', text, quote }
+    const userMsg: ChatMsg = { id: crypto.randomUUID(), role: 'user', text, quote, ...(files.length ? { files } : {}) }
+    // Every turn starts afresh, so the AI gets the files attached in this chat:
+    // newest first up to the size cap, skipping any whose turn failed (a file
+    // the AI rejected would otherwise break every later message).
+    const earlier = thread.messages.flatMap((m, i) => (thread.messages[i + 1]?.error ? [] : (m.files ?? [])))
+    let budget = CHAT_TOTAL_MAX
+    const chatFiles = [...earlier, ...files]
+      .reverse()
+      .filter((f) => (budget -= f.size) >= 0)
+      .reverse()
+      .map(({ id, name, size, mime }) => ({ id, name, size, mime }))
     const reply: ChatMsg = { id: replyId, role: 'assistant', text: '', pending: true }
     update(pid, (q) => ({
       ...q,
@@ -2019,8 +2032,9 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
       body: p.body,
       comments: (p.comments ?? []).filter((c) => !c.dismissed).map(({ quote, comment, kind }) => ({ quote, comment, kind })),
       history,
-      message: text,
+      message: text || '(See the attached file.)',
       quote,
+      files: chatFiles,
     })
     jobs.current.delete(jobId)
     chatJobs.current.delete(chatId)
