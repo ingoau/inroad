@@ -45,6 +45,33 @@ export function FindOrganisations(props: FindProps) {
   const pending = all.filter((c) => !isDismissed(c) && !addedId(c))
   const field = 'bg-transparent outline-none placeholder:text-muted-foreground/50'
 
+  // Every dismissed name, including ones from searches since cleared, so any can be restored.
+  const dismissedNames = discovery?.dismissed ?? []
+  const dismissedToggle = dismissedNames.length > 0 && (
+    <button onClick={() => setShowDismissed((v) => !v)} className="ml-auto hover:text-foreground">
+      {showDismissed ? 'Hide dismissed' : `${dismissedNames.length} dismissed`}
+    </button>
+  )
+  const dismissedList = showDismissed && dismissedNames.length > 0 && (
+    <section aria-label="Dismissed">
+      <h2 className="mb-1 text-xs text-muted-foreground">Dismissed. Inroad won’t suggest these again.</h2>
+      {dismissedNames.map((name) => {
+        const website = all.find((c) => orgKey(c.name) === orgKey(name))?.website
+        return (
+          <div key={name} className="flex items-baseline gap-3 border-b border-border/50 py-2 text-sm text-muted-foreground">
+            <span className="min-w-0 flex-1 truncate">
+              {name}
+              {website && <span className="ml-2 text-xs">{hostname(website)}</span>}
+            </span>
+            <button onClick={() => props.onDismiss(name, false)} className="text-foreground hover:underline">
+              Restore
+            </button>
+          </div>
+        )
+      })}
+    </section>
+  )
+
   if (!rounds.length) {
     const find = () => props.text.trim() && props.onDiscover(props.text)
     return (
@@ -69,7 +96,9 @@ export function FindOrganisations(props: FindProps) {
             Find <span className="opacity-60">⌘↵</span>
           </Button>
           <span className="text-muted-foreground">About 10 at a time, from the web and your connected apps.</span>
+          {dismissedToggle}
         </div>
+        {dismissedList}
       </>
     )
   }
@@ -146,33 +175,10 @@ export function FindOrganisations(props: FindProps) {
             New search
           </button>
         )}
-        {dismissed.size > 0 && (
-          <button onClick={() => setShowDismissed((v) => !v)} className="ml-auto hover:text-foreground">
-            {showDismissed ? 'Hide dismissed' : `${dismissed.size} dismissed`}
-          </button>
-        )}
+        {dismissedToggle}
       </div>
 
-      {showDismissed && dismissed.size > 0 && (
-        <section aria-label="Dismissed">
-          <h2 className="mb-1 text-xs text-muted-foreground">Dismissed. Inroad won’t suggest these again.</h2>
-          {/* Every dismissed name, including ones from searches since cleared. */}
-          {(discovery?.dismissed ?? []).map((name) => {
-            const website = all.find((c) => orgKey(c.name) === orgKey(name))?.website
-            return (
-              <div key={name} className="flex items-baseline gap-3 border-b border-border/50 py-2 text-sm text-muted-foreground">
-                <span className="min-w-0 flex-1 truncate">
-                  {name}
-                  {website && <span className="ml-2 text-xs">{hostname(website)}</span>}
-                </span>
-                <button onClick={() => props.onDismiss(name, false)} className="text-foreground hover:underline">
-                  Restore
-                </button>
-              </div>
-            )
-          })}
-        </section>
-      )}
+      {dismissedList}
 
       <div className="sticky bottom-4 flex items-center gap-2 rounded-full border bg-background py-1 pr-1 pl-4 shadow-md">
         <input

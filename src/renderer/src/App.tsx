@@ -1548,6 +1548,9 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     updateDiscovery(cid, (d) => ({ ...d, rounds: d.rounds.map((r) => (r.id === rid ? fn(r) : r)) }))
 
   const openFind = (cid: string) => {
+    // From a toast, the campaign may have been deleted since.
+    const c = campaignsRef.current.find((c) => c.id === cid)
+    if (!c || c.deletedAt || foldersRef.current.find((f) => f.id === c.folderId)?.deletedAt) return
     if (cid !== campaignIdRef.current) setCampaignId(cid)
     setAddMode('find')
     setView('add')
@@ -1616,7 +1619,10 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
   const describeCandidate = (c: Candidate) =>
     [c.why, ...c.sources.map((s) => (s.url ? `Source: ${s.title ? `${s.title} — ` : ''}${s.url}` : `Source: ${s.title}`))].join('\n')
 
-  const addCandidates = (cands: Candidate[]) => {
+  const addCandidates = (all: Candidate[]) => {
+    // Once each, and not if it's already in the campaign.
+    const keys = new Set(Object.keys(addedIds))
+    const cands = all.filter((c) => !keys.has(orgKey(c.name)) && !!keys.add(orgKey(c.name)))
     if (cands.length)
       addProspects(
         cands.map((c) => ({ name: c.name, website: c.website, note: '', discovery: describeCandidate(c) })),
@@ -1639,7 +1645,14 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     record(
       'Cleared the suggestions',
       undefined,
-      () => updateDiscovery(cid, (d) => ({ ...d, rounds: [...prev.rounds, ...d.rounds.filter((r) => !ids.has(r.id))] })),
+      () =>
+        updateDiscovery(cid, (d) => {
+          // A search since may have found some of the same organisations again; keep the newer copy.
+          const later = d.rounds.filter((r) => !ids.has(r.id))
+          const seen = new Set(later.flatMap((r) => r.candidates.map((c) => orgKey(c.name))))
+          const restored = prev.rounds.map((r) => ({ ...r, candidates: r.candidates.filter((c) => !seen.has(orgKey(c.name))) }))
+          return { ...d, rounds: [...restored, ...later] }
+        }),
       clear,
     )
   }

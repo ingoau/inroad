@@ -95,6 +95,8 @@ async function run(prompt: string, options: Options, onMessage?: (m: SDKMessage)
       onMessage?.(message)
       if (message.type === 'assistant' && message.error) authError ??= AUTH_ERRORS[message.error]
       if (message.type === 'result') {
+        // An API error (rate limit, sign-in, billing) ends as "success" with is_error and the error text in result.
+        if (message.subtype === 'success' && message.is_error) throw new Error(authError ?? (message.result.trim() || 'Claude reported an error.'))
         if (message.subtype !== 'success') throw new Error(authError ?? message.errors?.[0] ?? `Claude stopped early (${message.subtype}).`)
         return message
       }
