@@ -65,9 +65,10 @@ export function saveDraft(creds: MailCreds, draft: DraftInput, files: { filename
     // don't report the new message's UID.
     const messageId = `<${randomUUID()}@inroad.local>`
     const { mail } = creds
-    const raw = await new MailComposer({
+    const message = new MailComposer({
       from: mail.fromName ? { name: mail.fromName, address: mail.fromEmail } : mail.fromEmail,
       to: draft.to,
+      bcc: mail.bcc?.trim() || undefined,
       subject: draft.subject,
       // Email lines end in CRLF; servers like Fastmail refuse a bare "\n", and
       // the composer leaves 7-bit text parts exactly as given.
@@ -75,9 +76,11 @@ export function saveDraft(creds: MailCreds, draft: DraftInput, files: { filename
       text: crlf(draft.text),
       attachments: files,
       messageId,
-    })
-      .compile()
-      .build()
+    }).compile()
+    // The composer drops Bcc by default (it's meant for sending); a draft
+    // needs it kept so the mail app sends the copy.
+    message.keepBcc = true
+    const raw = await message.build()
     const res = await client.append(mailbox, raw, ['\\Draft', '\\Seen'])
     if (!res) throw new Error('The server refused the draft')
     return { mailbox, messageId }

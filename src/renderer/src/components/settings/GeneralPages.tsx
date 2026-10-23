@@ -91,6 +91,7 @@ export function MailboxForm({ settings, onSaved }: { settings: PublicSettings | 
     settings?.mail ?? { host: PROVIDERS.gmail.host, port: 993, secure: true, user: '', fromName: '', fromEmail: '' },
   )
   const [password, setPassword] = useState('')
+  const [bccValid, setBccValid] = useState(true)
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState<Status>(null)
 
@@ -99,7 +100,7 @@ export function MailboxForm({ settings, onSaved }: { settings: PublicSettings | 
     if (p !== 'other') setMail((m) => ({ ...m, host: PROVIDERS[p].host, port: PROVIDERS[p].port, secure: PROVIDERS[p].secure }))
   }
   const desktop = !!window.api
-  const complete = !!(mail.host && mail.port && mail.user && mail.fromEmail && (password || settings?.hasMailPassword))
+  const complete = !!(mail.host && mail.port && mail.user && mail.fromEmail && (password || settings?.hasMailPassword) && bccValid)
 
   const save = async () => {
     if (!window.api) return
@@ -137,6 +138,21 @@ export function MailboxForm({ settings, onSaved }: { settings: PublicSettings | 
             // The login is usually the same as the address; keep them in step until the user changes it.
             onChange={(e) => setMail({ ...mail, fromEmail: e.target.value, user: mail.user === mail.fromEmail ? e.target.value : mail.user })}
             placeholder="you@example.com"
+          />
+        </SettingsRow>
+        <SettingsRow title="Bcc" description="Added to every draft, e.g. your CRM’s logging address. Separate several with commas." htmlFor="bcc">
+          <Input
+            id="bcc"
+            type="email"
+            multiple
+            className="w-64"
+            value={mail.bcc ?? ''}
+            aria-invalid={!bccValid}
+            onChange={(e) => {
+              setMail({ ...mail, bcc: e.target.value })
+              setBccValid(e.target.validity.valid)
+            }}
+            placeholder="Optional"
           />
         </SettingsRow>
       </SettingsSection>
