@@ -52,6 +52,7 @@ import {
   MAX_VOICE_EXAMPLES,
   hasEmail,
   isDone,
+  type Status,
   snippetsFor,
   statusAfter,
   type Attachment,
@@ -678,8 +679,10 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
   }
 
   const commitTimers = useRef<Record<string, number>>({})
-  // Saves still in their undo window: the mailbox doesn't have them yet, so don't look for them.
-  const pendingSaves = useRef(new Set<string>())
+  // Saves not yet recorded (in their undo window, or on their way to the mailbox), by
+  // prospect: what it was before, and how to call the save off. The sent check
+  // leaves these alone, and marking one sent calls its save off.
+  const pendingSaves = useRef(new Map<string, { status: Status; draftRef?: DraftRef; cancel: () => void }>())
 
   // ---- Voice learning: what a save taught Claude about how you write ----
   const applyVoiceChange = (c: VoiceChange, on: boolean) =>
@@ -730,16 +733,33 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     const edited = !!selected.originalBody && selected.body !== selected.originalBody
     const versionId = crypto.randomUUID()
     // This save's trip to the mailbox, so undo knows whether to cancel it or delete the draft.
-    const sync: { committed: boolean; ref?: DraftRef } = { committed: false }
+    // attempt is the current go at it: undo (or marking sent) clears it, and a
+    // commit that lands after that removes its own draft instead of recording it.
+    const sync: { committed: boolean; ref?: DraftRef; attempt?: object } = { committed: false }
+    const pending = {
+      status: prev,
+      draftRef: prevRef,
+      cancel: () => {
+        clearTimeout(commitTimers.current[pid])
+        sync.attempt = undefined
+        if (pendingSaves.current.get(pid) === pending) pendingSaves.current.delete(pid)
+      },
+    }
     // Voice learning runs alongside; undo rolls it back, redo re-applies it.
     const learn: { started: boolean; active: boolean; change?: VoiceChange } = { started: false, active: false }
     const snapshot = selected
 
     const commit = async () => {
       sync.committed = true
+      const attempt = sync.attempt
       const p = get(pid)
+      // A newer save may have taken over; only it clears the entry then.
+      const settle = () => pendingSaves.current.get(pid) === pending && pendingSaves.current.delete(pid)
       // Marked as sent (or gone) in the meantime: nothing to save.
-      if (!p || !window.api || p.status === 'sent') return void pendingSaves.current.delete(pid)
+      if (!p || !window.api || p.status === 'sent') return void settle()
+      // The draft this one replaces: whatever's recorded now, which can be a
+      // save that landed after this one was made.
+      const replaced = p.draftRef
       const attachments = campaignsRef.current.find((c) => c.id === p.campaignId)?.attachments ?? []
       const res = await window.api.mail.saveDraft({
         to: p.to,
@@ -749,7 +769,12 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
         attachments,
       })
       // Until the new draft is recorded, the sent check would be looking at the old one.
-      pendingSaves.current.delete(pid)
+      settle()
+      // Undone or marked sent on the way: take the draft back out.
+      if (sync.attempt !== attempt) {
+        if (res.ok) void window.api.mail.deleteDraft(res.value)
+        return
+      }
       if (!res.ok) {
         update(pid, (q) => ({
           ...q,
@@ -764,7 +789,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
       sync.ref = res.value
       update(pid, (q) => ({ ...q, draftRef: res.value, draftMissing: undefined }))
       // Saving again replaces the earlier draft rather than leaving a duplicate behind.
-      if (prevRef) void window.api.mail.deleteDraft(prevRef)
+      if (replaced) void window.api.mail.deleteDraft(replaced)
     }
 
     const apply = () => {
@@ -775,7 +800,9 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
       }))
       // Held back briefly so undo can cancel it before anything reaches the mailbox.
       sync.committed = false
-      pendingSaves.current.add(pid)
+      sync.ref = undefined
+      sync.attempt = {}
+      pendingSaves.current.set(pid, pending)
       clearTimeout(commitTimers.current[pid])
       commitTimers.current[pid] = window.setTimeout(commit, UNDO_GRACE_MS)
       if (!edited) return
@@ -806,21 +833,23 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
       () => {
         // It went out since: there's no draft left to take back.
         if (get(pid)?.status === 'sent') return `${company}'s email has been sent since, so there's no draft to remove`
-        // Once the save reached the mailbox it replaced (deleted) the earlier draft, so don't point at that one.
+        // Once the save reached the mailbox it replaced (deleted) the earlier
+        // draft, so don't point at that one. Short of that, it's as it was.
+        const landed = !!sync.ref
         update(pid, (p) => ({
           ...p,
-          status: sync.committed && prev === 'saved' ? statusAfter({ ...p, status: 'edited' }, p.body) : prev,
-          draftRef: sync.committed ? undefined : prevRef,
+          status: landed && prev === 'saved' ? statusAfter({ ...p, status: 'edited' }, p.body) : prev,
+          draftRef: landed ? undefined : prevRef,
           versions: p.versions.filter((v) => v.id !== versionId),
         }))
         learn.active = false
         if (learn.change) applyVoiceChange(learn.change, false)
-        if (!sync.committed) {
-          clearTimeout(commitTimers.current[pid])
-          pendingSaves.current.delete(pid)
-          return `Cancelled saving ${company}. Nothing reached your mailbox.`
+        if (!landed) {
+          const wasSent = sync.committed
+          pending.cancel()
+          return wasSent ? `Cancelled saving ${company}` : `Cancelled saving ${company}. Nothing reached your mailbox.`
         }
-        if (sync.ref && window.api)
+        if (window.api && sync.ref)
           void window.api.mail.deleteDraft(sync.ref).then((r) => !r.ok && notify({ text: `Couldn’t remove the draft from your mailbox: ${r.error}` }))
         return `Deleted ${company}'s draft from your mailbox${learn.change ? ' and rolled back the voice update' : ''}`
       },
@@ -851,12 +880,13 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     record(at ? `Archived ${p.company}` : `Unarchived ${p.company}`, id, () => set(prev), () => set(at))
   }
 
-  type SentFields = Pick<Prospect, 'status' | 'sentAt' | 'sentNote' | 'sentBy' | 'archivedAt' | 'draftMissing' | 'draftRef'>
+  type SentFields = Pick<Prospect, 'status' | 'sentAt' | 'sentNote' | 'sentBy' | 'sentFrom' | 'archivedAt' | 'draftMissing' | 'draftRef'>
   const sentFields = (p: Prospect): SentFields => ({
     status: p.status,
     sentAt: p.sentAt,
     sentNote: p.sentNote,
     sentBy: p.sentBy,
+    sentFrom: p.sentFrom,
     archivedAt: p.archivedAt,
     draftMissing: p.draftMissing,
     draftRef: p.draftRef,
@@ -870,10 +900,15 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
   const markSent = (id: string, note = '') => {
     const p = get(id)
     if (!p || !hasEmail(p)) return
-    const before = sentFields(p)
+    // A save still on its way would leave a draft of a sent email in the
+    // mailbox: call it off, and undo goes back to before it.
+    const saving = pendingSaves.current.get(id)
+    saving?.cancel()
+    const before = saving ? { ...sentFields(p), status: saving.status, draftRef: saving.draftRef } : sentFields(p)
     const now = Date.now()
     const after: SentFields = {
       ...before,
+      sentFrom: before.status,
       status: 'sent',
       sentAt: now,
       sentNote: note.trim() || undefined,
@@ -886,23 +921,23 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     record('Marked as sent', id, () => setSentFields(id, before), () => setSentFields(id, after), `Marked ${p.company} as sent · moved to Archived`)
   }
 
-  // Inroad got it wrong, or you changed your mind. Marked by hand: the draft
-  // (if any) is still in Drafts, so it's saved again and the next check sees
-  // to it. Spotted in Sent: the draft has left Drafts, so forget it rather than
-  // spotting the same sent copy again.
+  // Inroad got it wrong, or you changed your mind. Marked by hand: back to how
+  // it was, draft and all, and the next check sees to it. Spotted in Sent: the
+  // draft has left Drafts, so forget it rather than spotting the same sent copy again.
   const markNotSent = (id: string) => {
     const p = get(id)
     if (!p || p.status !== 'sent') return
     const before = sentFields(p)
-    const keepDraft = p.sentBy === 'you' && !!p.draftRef
+    const byHand = p.sentBy === 'you'
     const after: SentFields = {
-      status: keepDraft ? 'saved' : statusAfter({ ...p, status: 'edited' }, p.body),
+      status: byHand && p.sentFrom ? p.sentFrom : statusAfter({ ...p, status: 'edited' }, p.body),
       sentAt: undefined,
       sentNote: undefined,
       sentBy: undefined,
+      sentFrom: undefined,
       archivedAt: undefined,
       draftMissing: undefined,
-      draftRef: keepDraft ? p.draftRef : undefined,
+      draftRef: byHand ? p.draftRef : undefined,
     }
     setSentFields(id, after)
     record('Marked as not sent', id, () => setSentFields(id, before), () => setSentFields(id, after), `Marked ${p.company} as not sent`)

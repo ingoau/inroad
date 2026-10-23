@@ -116,6 +116,8 @@ export interface Prospect {
   sentNote?: string
   // Who marked it sent: the check that found it in Sent, or you.
   sentBy?: 'check' | 'you'
+  // Marked by hand: the status before, so "Not sent" can put it back.
+  sentFrom?: Status
   // Out of the way of the work still to do; sending archives it. Cleared to unarchive.
   archivedAt?: number
 }

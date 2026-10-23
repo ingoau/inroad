@@ -166,6 +166,24 @@ await deleteDraft(creds, two.value)
 }
 console.log('✓ checkSent: one sent email accounts for one draft')
 
+// The deleted draft is checked first and its recipient guess must not take the
+// message the other draft owns by Message-ID.
+const early = await saveDraft(creds, draft('h@order.example'))
+const late = await saveDraft(creds, draft('h@order.example'))
+assert.ok(early.ok && late.ok)
+await deleteDraft(creds, early.value)
+await moveToSent(late.value.messageId)
+{
+  const r = await checkSent(creds, [
+    { id: 'early', ref: early.value, to: ['h@order.example'], savedAt: early.value.savedAt! },
+    { id: 'late', ref: late.value, to: ['h@order.example'], savedAt: late.value.savedAt! },
+  ])
+  assert.ok(r.ok)
+  assert.equal(r.value.early?.state, 'missing')
+  assert.equal(r.value.late?.state, 'sent')
+}
+console.log('✓ checkSent: a Message-ID match wins over a recipient guess, whatever the order')
+
 const bad = await testMail({ ...creds, mail: { ...creds.mail, port: 1 } })
 assert.equal(bad.ok, false)
 console.log('✓ unreachable server gives a friendly error:', !bad.ok && bad.error)

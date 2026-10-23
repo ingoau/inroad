@@ -150,16 +150,22 @@ export function checkSent(creds: MailCreds, checks: SentCheck[]): Promise<Result
             })
           return msgs
         }
+        // Message-IDs first, for every draft, so a guess by recipient can't take
+        // a message another draft owns outright.
+        const unmatched: SentCheck[] = []
         for (const c of rest) {
           const byId: Found = await client.search({ header: { 'message-id': c.ref.messageId } }, { uid: true })
           if (!byId) continue
-          if (byId.length) {
-            // Our own Message-ID is certain, whatever the date says.
-            const at = (await details(byId)).map((m) => m.at).filter((t) => !Number.isNaN(t))
-            byId.forEach((u) => claimed.add(u))
-            out[c.id] = { state: 'sent', at: at.length ? Math.min(...at) : Date.now() }
+          if (!byId.length) {
+            unmatched.push(c)
             continue
           }
+          // Our own Message-ID is certain, whatever the date says.
+          const at = (await details(byId)).map((m) => m.at).filter((t) => !Number.isNaN(t))
+          byId.forEach((u) => claimed.add(u))
+          out[c.id] = { state: 'sent', at: at.length ? Math.min(...at) : Date.now() }
+        }
+        for (const c of unmatched) {
           const to = c.to?.[0]?.trim().toLowerCase()
           if (!to) {
             out[c.id] = { state: 'missing' }
