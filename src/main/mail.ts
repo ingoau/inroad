@@ -88,67 +88,103 @@ export function saveDraft(creds: MailCreds, draft: DraftInput, files: { filename
 }
 
 // The \Sent special-use folder, or one named like it. Undefined if there isn't one.
-async function findSent(client: ImapFlow): Promise<string | undefined> {
-  const boxes = await client.list()
-  return (boxes.find((b) => b.specialUse === '\\Sent') ?? boxes.find((b) => /^sent( items| mail| messages)?$/i.test(b.name)))?.path
-}
+const findSent = (boxes: { path: string; name: string; specialUse?: string }[]) =>
+  (boxes.find((b) => b.specialUse === '\\Sent') ?? boxes.find((b) => /^sent( items| mail| messages)?$/i.test(b.name)))?.path
 
 // Mail apps and servers stamp the sent copy a little after the save; allow for clocks that disagree.
 const CLOCK_SLACK_MS = 5 * 60_000
+const DAY_MS = 86_400_000
+
+// imapflow's search returns false when the server refuses it rather than
+// throwing. That's "couldn't tell", not "not there".
+type Found = number[] | false | undefined
 
 // Drafts that are still there are the common case, so look there first. For
 // the rest, the sent copy usually keeps our Message-ID; some mail apps (Apple
-// Mail) write a new one, so fall back to anything sent to the same address
-// after the draft was saved. Not the subject: people tweak it before sending.
+// Mail) write a new one, so fall back to a message sent to exactly the same
+// address after the draft was saved. Not the subject: people tweak it before
+// sending. Anything it can't be sure of is left out rather than called missing.
 export function checkSent(creds: MailCreds, checks: SentCheck[]): Promise<Result<Record<string, SentState>>> {
   return run(creds, async (client) => {
     const out: Record<string, SentState> = {}
+    // Not in Drafts (or Drafts is gone), so look in Sent.
+    const rest: SentCheck[] = []
+    const boxes = await client.list()
     for (const mailbox of new Set(checks.map((c) => c.ref.mailbox))) {
-      let lock
-      try {
-        lock = await client.getMailboxLock(mailbox)
-      } catch {
-        continue // The Drafts folder was renamed or removed: look in Sent below.
+      const group = checks.filter((c) => c.ref.mailbox === mailbox)
+      // A Drafts folder that was renamed or removed can't hold the draft.
+      if (!boxes.some((b) => b.path === mailbox)) {
+        rest.push(...group)
+        continue
       }
+      const lock = await client.getMailboxLock(mailbox).catch(() => null)
+      if (!lock) continue // Busy or refused: try again next time.
       try {
-        for (const c of checks.filter((c) => c.ref.mailbox === mailbox)) {
-          const uids = await client.search({ header: { 'message-id': c.ref.messageId } }, { uid: true })
-          if (uids && uids.length) out[c.id] = { state: 'draft' }
+        for (const c of group) {
+          // Some mail apps only flag the sent draft \Deleted and leave it there.
+          const found: Found = await client.search({ header: { 'message-id': c.ref.messageId }, deleted: false }, { uid: true })
+          if (!found) continue
+          if (found.length) out[c.id] = { state: 'draft' }
+          else rest.push(c)
         }
       } finally {
         lock.release()
       }
     }
-    const rest = checks.filter((c) => !out[c.id])
     if (!rest.length) return out
-    const sent = await findSent(client)
+    const sent = findSent(boxes)
     // Without a Sent folder there's no telling sent from deleted, so say nothing.
     if (!sent) return out
-    const lock = await client.getMailboxLock(sent)
     try {
-      // When each message reached Sent (the server's own timestamp).
-      const times = async (uids: number[]) => {
-        const out: number[] = []
-        for await (const m of client.fetch(uids.join(','), { internalDate: true }, { uid: true }))
-          if (m.internalDate) out.push(new Date(m.internalDate).getTime())
-        return out
-      }
-      for (const c of rest) {
-        const byId = (await client.search({ header: { 'message-id': c.ref.messageId } }, { uid: true })) || []
-        if (byId.length) {
-          // Our own Message-ID is certain, whatever the date says.
-          const at = await times(byId)
-          out[c.id] = { state: 'sent', at: at.length ? Math.min(...at) : Date.now() }
-          continue
+      const lock = await client.getMailboxLock(sent)
+      try {
+        // Each sent message accounts for one draft at most.
+        const claimed = new Set<number>()
+        const details = async (uids: number[]) => {
+          const msgs: { uid: number; at: number; to: string[] }[] = []
+          for await (const m of client.fetch(uids.join(','), { internalDate: true, envelope: true }, { uid: true }))
+            msgs.push({
+              uid: m.uid,
+              at: m.internalDate ? new Date(m.internalDate).getTime() : NaN,
+              to: (m.envelope?.to ?? []).map((a) => a.address?.toLowerCase() ?? ''),
+            })
+          return msgs
         }
-        const after = c.savedAt - CLOCK_SLACK_MS
-        // SINCE only compares dates, so check the exact time after.
-        const byTo = c.to[0] ? (await client.search({ to: c.to[0], since: new Date(after) }, { uid: true })) || [] : []
-        const at = byTo.length ? (await times(byTo)).filter((t) => t >= after) : []
-        out[c.id] = at.length ? { state: 'sent', at: Math.min(...at) } : { state: 'missing' }
+        for (const c of rest) {
+          const byId: Found = await client.search({ header: { 'message-id': c.ref.messageId } }, { uid: true })
+          if (!byId) continue
+          if (byId.length) {
+            // Our own Message-ID is certain, whatever the date says.
+            const at = (await details(byId)).map((m) => m.at).filter((t) => !Number.isNaN(t))
+            byId.forEach((u) => claimed.add(u))
+            out[c.id] = { state: 'sent', at: at.length ? Math.min(...at) : Date.now() }
+            continue
+          }
+          const to = c.to?.[0]?.trim().toLowerCase()
+          if (!to) {
+            out[c.id] = { state: 'missing' }
+            continue
+          }
+          const after = c.savedAt - CLOCK_SLACK_MS
+          // SINCE compares dates only, in the server's timezone, so ask from a day
+          // earlier and check the exact time here. TO matches substrings too
+          // ("bojo@" for "jo@"), so check the address exactly.
+          const byTo: Found = await client.search({ to, since: new Date(after - DAY_MS) }, { uid: true })
+          if (!byTo) continue
+          const match = (byTo.length ? await details(byTo) : [])
+            .filter((m) => !claimed.has(m.uid) && m.at >= after && m.to.includes(to))
+            .sort((x, y) => x.at - y.at)[0]
+          if (match) {
+            claimed.add(match.uid)
+            out[c.id] = { state: 'sent', at: match.at }
+          } else out[c.id] = { state: 'missing' }
+        }
+      } finally {
+        lock.release()
       }
-    } finally {
-      lock.release()
+    } catch (err) {
+      // Keep what Drafts told us; the rest waits for the next check.
+      console.error('[mail] couldn’t check Sent:', (err as Error).message)
     }
     return out
   })

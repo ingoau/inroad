@@ -114,6 +114,8 @@ export interface Prospect {
   sentAt?: number
   // What you noted when marking it sent, e.g. "through their contact form".
   sentNote?: string
+  // Who marked it sent: the check that found it in Sent, or you.
+  sentBy?: 'check' | 'you'
   // Out of the way of the work still to do; sending archives it. Cleared to unarchive.
   archivedAt?: number
 }

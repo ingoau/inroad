@@ -124,6 +124,48 @@ await deleteDraft(creds, gone.value)
 assert.deepEqual(await check('gone', gone.value, 'e@gone.example'), { state: 'missing' })
 console.log('✓ checkSent: a deleted draft is missing, not sent')
 
+// Thunderbird-style: the sent draft is only flagged \Deleted, not expunged.
+const flagged = await saveDraft(creds, draft('f@flagged.example'))
+assert.ok(flagged.ok)
+{
+  const c = await client()
+  const lock = await c.getMailboxLock('Drafts')
+  const uids = (await c.search({ header: { 'message-id': flagged.value.messageId } }, { uid: true })) || []
+  const src = (await c.fetchOne(String(uids[0]), { source: true }, { uid: true }))!.source!.toString()
+  await c.messageFlagsAdd(uids.join(','), ['\\Deleted'], { uid: true })
+  lock.release()
+  await c.append('Sent', src, ['\\Seen'])
+  await c.logout()
+}
+assert.equal((await check('flagged', flagged.value, 'f@flagged.example'))?.state, 'sent')
+console.log('✓ checkSent: a draft flagged \\Deleted but not expunged counts as gone')
+
+// TO search matches substrings; "bojo@" isn't "jo@".
+const near = await saveDraft(creds, draft('jo@near.example'))
+assert.ok(near.ok)
+const other = await saveDraft(creds, draft('bojo@near.example'))
+assert.ok(other.ok)
+await deleteDraft(creds, near.value)
+await moveToSent(other.value.messageId, '<bojo@mail.example>')
+assert.deepEqual(await check('near', near.value, 'jo@near.example'), { state: 'missing' })
+console.log('✓ checkSent: a similar address is not the same recipient')
+
+// Two drafts to one person, one sent with a new Message-ID: only one is sent.
+const one = await saveDraft(creds, draft('g@twice.example'))
+const two = await saveDraft(creds, draft('g@twice.example'))
+assert.ok(one.ok && two.ok)
+await moveToSent(one.value.messageId, '<twice@mail.example>')
+await deleteDraft(creds, two.value)
+{
+  const r = await checkSent(creds, [
+    { id: 'one', ref: one.value, to: ['g@twice.example'], savedAt: one.value.savedAt! },
+    { id: 'two', ref: two.value, to: ['g@twice.example'], savedAt: two.value.savedAt! },
+  ])
+  assert.ok(r.ok)
+  assert.deepEqual(Object.values(r.value).map((s) => s.state).sort(), ['missing', 'sent'])
+}
+console.log('✓ checkSent: one sent email accounts for one draft')
+
 const bad = await testMail({ ...creds, mail: { ...creds.mail, port: 1 } })
 assert.equal(bad.ok, false)
 console.log('✓ unreachable server gives a friendly error:', !bad.ok && bad.error)

@@ -295,7 +295,7 @@ export function Editor(props: Props) {
                   Copy
                   <span className="opacity-60 @max-md:hidden">⌘⇧C</span>
                 </Button>
-                {!sent && <MarkSent open={props.markSentOpen} onOpenChange={props.onMarkSentOpenChange} onMark={props.onMarkSent} />}
+                {!sent && <MarkSent key={p.id} open={props.markSentOpen} onOpenChange={props.onMarkSentOpenChange} onMark={props.onMarkSent} />}
                 <Quiet onClick={props.onRegenerate} disabled={regenerating}>
                   {regenerating && <Loader2 className="mr-1 inline size-3.5 animate-spin" />}
                   {hasDraft ? (regenerating ? 'Regenerating…' : 'Regenerate') : regenerating ? 'Writing…' : 'Write with AI'}
@@ -372,7 +372,9 @@ function MarkSent({ open, onOpenChange, onMark }: { open: boolean; onOpenChange:
             onChange={(e) => setNote(e.target.value)}
             onKeyDown={(e) => {
               if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                // Closing re-renders before the key reaches the window, where ⌘↵ would save.
                 e.preventDefault()
+                e.stopPropagation()
                 submit()
               }
             }}

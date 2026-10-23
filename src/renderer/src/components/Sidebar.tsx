@@ -68,7 +68,8 @@ export function AppSidebar(props: Props) {
   const shown = prospects.filter(inFilter[filter])
   const count = (f: Filter) => prospects.filter(inFilter[f]).length
   const researching = prospects.filter((p) => p.status === 'researching' || p.status === 'queued').length
-  const saved = count('saved')
+  // Everything still sitting in Drafts, archived or not.
+  const saved = prospects.filter((p) => p.status === 'saved').length
 
   useEffect(() => {
     document.querySelector(`[data-prospect="${selectedId}"]`)?.scrollIntoView({ block: 'nearest' })
