@@ -3,6 +3,7 @@ import { Loader2, X } from 'lucide-react'
 import { useState } from 'react'
 import type { ParsedOrganisation } from '../../../shared/api'
 import type { Campaign } from '../data'
+import { FindOrganisations, type FindProps } from './FindOrganisations'
 import { Shortcut } from './hint'
 import { TopBar } from './TopBar'
 
@@ -19,7 +20,8 @@ const asList = (lines: string[]): ParsedOrganisation[] =>
 
 // Add organisations in your own words ("PCBWay, mention Campfire…"): the AI
 // splits it into organisations with their own notes, which you check first.
-// A page in the main area rather than a dialog, so there's room to write.
+// Or have the AI find them (FindOrganisations). A page in the main area rather
+// than a dialog, so there's room to write.
 export function AddCompaniesPage({
   campaign,
   voiceName,
@@ -28,6 +30,9 @@ export function AddCompaniesPage({
   onAdd,
   onCancel,
   onResearchOnly,
+  mode,
+  onMode,
+  find,
 }: {
   campaign: Campaign
   voiceName: string
@@ -37,6 +42,9 @@ export function AddCompaniesPage({
   onAdd: (orgs: ParsedOrganisation[]) => void
   onCancel: () => void
   onResearchOnly: (researchOnly: boolean) => void
+  mode: 'list' | 'find'
+  onMode: (mode: 'list' | 'find') => void
+  find: FindProps
 }) {
   const [orgs, setOrgs] = useState<ParsedOrganisation[] | null>(null)
   const [busy, setBusy] = useState(false)
@@ -79,7 +87,7 @@ export function AddCompaniesPage({
         <div
           className="mx-auto flex max-w-[600px] flex-col gap-7 px-6 pt-12 pb-20"
           onKeyDown={(e) => {
-            if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+            if (mode === 'list' && (e.metaKey || e.ctrlKey) && e.key === 'Enter') {
               e.preventDefault()
               if (orgs) submit()
               else void next()
@@ -89,13 +97,36 @@ export function AddCompaniesPage({
           <div>
             <h1 className="mb-2 font-heading text-2xl font-medium">Add to {campaign.name || 'this campaign'}</h1>
             <p className="text-muted-foreground">
-              {orgs
-                ? 'Check the list. Notes are followed for that organisation only, on top of the campaign’s notes and email format.'
-                : 'Write it however you like: a list of names, or notes about what to say to each one.'}
+              {mode === 'find'
+                ? 'Describe who you’re after. The AI searches the web and your connected apps and suggests organisations; add the ones you want and their research starts straight away.'
+                : orgs
+                  ? 'Check the list. Notes are followed for that organisation only, on top of the campaign’s notes and email format.'
+                  : 'Write it however you like: a list of names, or notes about what to say to each one.'}
             </p>
           </div>
 
-          {!orgs ? (
+          <div role="tablist" aria-label="How to add" className="inline-flex self-start rounded-full bg-muted p-0.5 text-sm">
+            {(
+              [
+                ['list', 'Type a list'],
+                ['find', 'Find with AI'],
+              ] as const
+            ).map(([m, label]) => (
+              <button
+                key={m}
+                role="tab"
+                aria-selected={mode === m}
+                onClick={() => onMode(m)}
+                className={`rounded-full px-3 py-1 transition-colors ${mode === m ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {mode === 'find' ? (
+            <FindOrganisations {...find} />
+          ) : !orgs ? (
             <>
               <textarea
                 autoFocus
@@ -145,31 +176,34 @@ export function AddCompaniesPage({
             </section>
           )}
 
-          <div className="flex flex-wrap items-center gap-x-5 gap-y-3 text-sm">
-            {orgs ? (
-              <>
-                <Button disabled={!valid.length} onClick={submit} className="h-9 rounded-full px-4">
-                  Research {valid.length || ''} <span className="opacity-60">⌘↵</span>
+          {/* Once there are suggestions, the find-more bar ends the page. */}
+          {!(mode === 'find' && find.discovery?.rounds.length) && (
+            <div className="flex flex-wrap items-center gap-x-5 gap-y-3 text-sm">
+              {mode === 'find' ? null : orgs ? (
+                <>
+                  <Button disabled={!valid.length} onClick={submit} className="h-9 rounded-full px-4">
+                    Research {valid.length || ''} <span className="opacity-60">⌘↵</span>
+                  </Button>
+                  <button onClick={() => setOrgs(null)} className="text-muted-foreground hover:text-foreground">
+                    Edit the text
+                  </button>
+                </>
+              ) : (
+                <Button disabled={!lines.length || busy} onClick={next} className="h-9 rounded-full px-4">
+                  {busy && <Loader2 className="animate-spin" />}
+                  {busy ? 'Reading…' : 'Next'} {!busy && <span className="opacity-60">⌘↵</span>}
                 </Button>
-                <button onClick={() => setOrgs(null)} className="text-muted-foreground hover:text-foreground">
-                  Edit the text
+              )}
+              <span className="text-muted-foreground">
+                {campaign.researchOnly
+                  ? 'Research only: you write each email, or press ⌘R to have the AI draft it.'
+                  : `Research and draft, in the “${voiceName}” voice.`}{' '}
+                <button onClick={() => onResearchOnly(!campaign.researchOnly)} className="text-foreground hover:underline">
+                  Change
                 </button>
-              </>
-            ) : (
-              <Button disabled={!lines.length || busy} onClick={next} className="h-9 rounded-full px-4">
-                {busy && <Loader2 className="animate-spin" />}
-                {busy ? 'Reading…' : 'Next'} {!busy && <span className="opacity-60">⌘↵</span>}
-              </Button>
-            )}
-            <span className="text-muted-foreground">
-              {campaign.researchOnly
-                ? 'Research only: you write each email, or press ⌘R to have the AI draft it.'
-                : `Research and draft, in the “${voiceName}” voice.`}{' '}
-              <button onClick={() => onResearchOnly(!campaign.researchOnly)} className="text-foreground hover:underline">
-                Change
-              </button>
-            </span>
-          </div>
+              </span>
+            </div>
+          )}
         </div>
       </div>
     </div>

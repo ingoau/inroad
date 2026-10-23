@@ -2,10 +2,12 @@ import { createSdkMcpServer, query, tool, type Options, type SDKMessage } from '
 import { mkdirSync } from 'node:fs'
 import { z } from 'zod'
 import type {
+  Candidate,
   ChatRequest,
   ChatResult,
   ClaudeProgress,
   DraftRequest,
+  DiscoverRequest,
   DraftResult,
   EventAnswersRequest,
   EventLookupRequest,
@@ -22,6 +24,7 @@ import type {
   VoiceLearnResult,
   WritingRulesRequest,
 } from '../shared/api'
+import { orgKey } from '../shared/org'
 
 // Inroad drives Claude through the Claude Agent SDK (Claude Code as a library).
 // With no API key set it uses this machine's Claude Code login; with a key it
@@ -147,6 +150,14 @@ function guidanceSections(req: EmailGuidance & { company: string }) {
   ].filter(Boolean)
 }
 
+// What "Find with AI" found when it suggested the organisation. A lead to check,
+// so research can start from it rather than from nothing.
+function discoverySection(discovery?: string) {
+  return discovery?.trim()
+    ? [`<found_when_suggested>\nWhy this organisation was suggested (check it rather than taking it as given):\n${discovery.trim()}\n</found_when_suggested>`]
+    : []
+}
+
 const GUIDANCE_RULE = `If there's an email format, follow its structure and include everything it asks for. If the user gave instructions for this organisation, follow them exactly; they override the campaign notes, the format and your own judgement where they conflict.`
 
 // ------------------------------------------------- research + first draft
@@ -229,6 +240,7 @@ export async function researchAndDraft(cfg: ClaudeConfig, req: ResearchRequest, 
       voiceSection(req.voice),
       `<sender>${req.senderName || 'the user'}</sender>`,
       ...guidanceSections(req),
+      ...discoverySection(req.discovery),
       `Organisation: ${req.company}${req.website ? ` (website: ${req.website})` : ''}`,
     ].join('\n\n')
     const result = await run(
@@ -343,7 +355,7 @@ function toolStep(m: SDKMessage): string[] {
     const input = block.input as { query?: string; url?: string }
     if (block.name === 'WebSearch' && input.query) steps.push(`Searched the web for “${input.query}”`)
     else if (block.name === 'WebFetch' && input.url) steps.push(`Read ${input.url.replace(/^https?:\/\//, '')}`)
-    else if (block.name.startsWith('mcp__') && !block.name.startsWith('mcp__email__')) steps.push(`Checked ${connectorName(block.name)}`)
+    else if (block.name.startsWith('mcp__') && !/^mcp__(email|discover)__/.test(block.name)) steps.push(`Checked ${connectorName(block.name)}`)
   }
   return steps
 }
@@ -623,6 +635,88 @@ For each, keep any website they gave, and put everything they said about it in "
     return parseOutput(OrganisationsSchema, result.structured_output)
       .organisations.map((o) => ({ name: o.name.trim(), website: o.website.trim(), note: o.note.trim() }))
       .filter((o) => o.name)
+  })
+}
+
+// ------------------------------------------------ finding organisations
+
+const CandidateFields = {
+  name: z.string().min(1).describe('The organisation’s name, as you’d search for it.'),
+  website: z.string().describe('Its main website (domain or URL), or "" if you didn’t find one.'),
+  why: z
+    .string()
+    .min(1)
+    .describe('One short sentence, specific to this campaign: why they’d say yes. Name the evidence, e.g. "Sponsored UNIHACK 2025 with prizes".'),
+  fit: z.enum(['strong', 'possible']).describe('strong: clear evidence they do this kind of thing. possible: a plausible fit without direct evidence.'),
+  sources: z
+    .array(z.object({ title: z.string(), url: z.string() }))
+    .describe('Where the evidence came from: pages, or a connected tool (e.g. "Slack #sponsors").'),
+}
+
+const DISCOVER_SYSTEM = `You find organisations for the user to reach out to. The campaign notes say what the user is asking for (sponsorship, a venue, a partnership…) and the user's query says who they're after. Find real organisations that are likely to say yes.
+
+Look for evidence: who has done this before for similar events or causes (sponsor lists, past partners, announcements), who fits what the campaign asks for, and anything in the user's connected tools (Slack, email, docs, notes) about organisations they've talked to or been pointed to. Use WebSearch and WebFetch, and the connected tools. Only read and search; never send, post, create or change anything.
+
+Call suggest_organisation once for each organisation as soon as you're confident about it, so the user sees it straight away. Aim for about 10 unless the query asks for a different number. Prefer fewer good suggestions over padding: leave out anything that clearly doesn't fit. Never suggest an organisation from the exclude list, or one you've already suggested. When you're done, reply with one short line.`
+
+// Discovery runs as an agent that calls suggest_organisation for each find,
+// so they stream into the UI one at a time instead of arriving at the end.
+export async function discover(cfg: ClaudeConfig, req: DiscoverRequest, emit: Emit, abort?: AbortController): Promise<Result<Candidate[]>> {
+  return guard(async () => {
+    const found: Candidate[] = []
+    const seen = new Set(req.exclude.map(orgKey))
+    const suggest = tool(
+      'suggest_organisation',
+      'Show the user one organisation that suits the campaign. They can add it with one click.',
+      CandidateFields,
+      async (c) => {
+        const key = orgKey(c.name)
+        if (seen.has(key))
+          return { content: [{ type: 'text', text: `${c.name} is already in the campaign, suggested or dismissed. Find a different one.` }], isError: true }
+        seen.add(key)
+        const candidate = {
+          name: c.name.trim(),
+          website: c.website.trim(),
+          why: c.why.trim(),
+          fit: c.fit,
+          sources: c.sources.filter((s) => s.title.trim() || s.url.trim()),
+        }
+        found.push(candidate)
+        emit({ jobId: req.jobId, kind: 'candidate', candidate })
+        return { content: [{ type: 'text', text: 'Shown to the user.' }] }
+      },
+      { annotations: { readOnlyHint: true }, alwaysLoad: true },
+    )
+    const server = createSdkMcpServer({ name: 'discover', version: '1.0.0', tools: [suggest] })
+    emit({ jobId: req.jobId, kind: 'step', text: 'Reading the campaign' })
+    const prompt = [
+      `<campaign_notes>\n${req.campaignNotes || '(none)'}\n</campaign_notes>`,
+      req.exclude.length ? `<exclude>\n${req.exclude.join('\n')}\n</exclude>` : '',
+      req.earlier.length ? `<earlier_queries>\n${req.earlier.join('\n')}\n</earlier_queries>\nThe query below follows on from these.` : '',
+      `Query: ${req.query}`,
+    ]
+      .filter(Boolean)
+      .join('\n\n')
+    try {
+      await run(
+        prompt,
+        baseOptions(cfg, {
+          systemPrompt: DISCOVER_SYSTEM,
+          mcpServers: { discover: server },
+          ...readOnlyConnectors(['mcp__discover__suggest_organisation']),
+          effort: 'medium',
+          maxTurns: 40,
+          abortController: abort,
+        }),
+        (m) => {
+          for (const step of toolStep(m)) emit({ jobId: req.jobId, kind: 'step', text: step })
+        },
+      )
+    } catch (err) {
+      // Stopped by the user, or ran out of turns: keep what was found so far.
+      if (abort?.signal.aborted || !found.length) throw err
+    }
+    return found
   })
 }
 

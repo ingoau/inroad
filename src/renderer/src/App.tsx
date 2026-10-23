@@ -23,6 +23,7 @@ import {
   RefreshCw,
   Settings,
   Slash,
+  Sparkles,
   Square,
   Sun,
   Trash2,
@@ -51,6 +52,9 @@ import {
   statusAfter,
   type Attachment,
   type Campaign,
+  type Candidate,
+  type Discovery,
+  type DiscoveryRound,
   type ChatMsg,
   type Comment,
   type Folder,
@@ -62,6 +66,7 @@ import {
   type VoiceExample,
 } from './data'
 import type { ClaudeProgress, DraftRef, EmailComment, PublicSettings, VoiceInput } from '../../shared/api'
+import { orgKey } from '../../shared/org'
 import { firstRun, persist, upgrade, type SavedState } from './persist'
 import { defaultEmailStyle, emailHtml, emailStyleVars, markdownToText, normalizeMarkdown, type EmailStyle } from './markdown'
 import { Onboarding, type OnboardingResult } from './components/Onboarding'
@@ -136,6 +141,9 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
   const [showDiff, setShowDiff] = useState(false)
   // What's typed on the Add page, kept while you look elsewhere.
   const [addText, setAddText] = useState('')
+  // Typing a list, or "Find with AI"; and the search being written.
+  const [addMode, setAddMode] = useState<'list' | 'find'>('list')
+  const [findText, setFindText] = useState('')
   const openAdd = () => setView('add')
   const [palette, setPalette] = useState(false)
   const [help, setHelp] = useState(false)
@@ -231,16 +239,20 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
       examples: [...pasted, ...learned].map(({ draft, final }) => ({ draft, final })),
     }
   }
-  const claudeContext = (p: Prospect) => {
-    const c = campaignsRef.current.find((c) => c.id === p.campaignId)
+  const campaignNotes = (campaignId: string) => {
+    const c = campaignsRef.current.find((c) => c.id === campaignId)
     // Claude should know what's attached so the email can mention it.
     const files = c?.attachments.length ? `\n\nAttached to every email: ${c.attachments.map((a) => a.name).join(', ')}` : ''
     // The folder's shared context comes first, then this campaign's own notes.
     const f = foldersRef.current.find((f) => f.id === c?.folderId)
     const about = f && (f.name || f.notes) ? `About ${f.name || 'the event'} (shared by every campaign in it):\n${f.notes}\n\nThis campaign:\n` : ''
+    return about + (c?.notes ?? '') + files
+  }
+  const claudeContext = (p: Prospect) => {
+    const c = campaignsRef.current.find((c) => c.id === p.campaignId)
     return {
       company: p.company,
-      campaignNotes: about + (c?.notes ?? '') + files,
+      campaignNotes: campaignNotes(p.campaignId),
       emailFormat: c?.format,
       orgNote: p.note,
       voice: voiceInput(voiceOf(p.campaignId)),
@@ -259,6 +271,9 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
 
   // Research runner: pulls from the queue so at most MAX_CONCURRENT run at once.
   const researching = useRef(new Set<string>())
+  // Research stopped because adding the organisation was undone. If it's
+  // redone before the stop lands, it goes back in the queue instead of failing.
+  const dropped = useRef(new Set<string>())
   const research = async (p: Prospect) => {
     const pid = p.id
     researching.current.add(pid)
@@ -268,11 +283,12 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     jobs.current.set(jobId, (e) => e.kind === 'step' && update(pid, (q) => ({ ...q, progress: [...q.progress, e.text] })))
     const researchOnly = !!campaignsRef.current.find((c) => c.id === p.campaignId)?.researchOnly
     const res = window.api
-      ? await window.api.claude.research({ jobId, website: p.domain || undefined, ...claudeContext(p), draft: !researchOnly })
+      ? await window.api.claude.research({ jobId, website: p.domain || undefined, ...claudeContext(p), discovery: p.discovery, draft: !researchOnly })
       : ({ ok: false, error: 'Research runs in the Inroad desktop app.' } as const)
     jobs.current.delete(jobId)
     researchJobs.current.delete(pid)
     researching.current.delete(pid)
+    if (dropped.current.delete(pid)) return update(pid, (q) => ({ ...q, status: 'queued', progress: [] }))
     if (!res.ok) return update(pid, (q) => ({ ...q, status: 'failed', error: res.error === 'Stopped.' ? 'You stopped the research.' : res.error }))
     const { research, brief, draft } = res.value
     if (!draft) return update(pid, (q) => ({ ...q, status: 'researched', research, brief }))
@@ -1379,6 +1395,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
       run: () => setRightOpen((v) => !v),
     },
     { id: 'add', group: 'Actions', label: 'Add to campaign', icon: <Plus />, shortcut: '⌘N', run: () => openAdd() },
+    { id: 'find', group: 'Actions', label: 'Find organisations with AI', icon: <Sparkles />, run: () => openFind(campaign.id) },
     {
       id: 'theme',
       group: 'Actions',
@@ -1473,13 +1490,15 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
 
   const queuePosition = prospects.filter((p) => p.status === 'queued' && !p.deletedAt).findIndex((p) => p.id === selectedId)
 
-  const addProspects = (orgs: { name: string; website: string; note: string }[]) => {
-    const added = orgs.map<Prospect>(({ name, website, note }) => ({
+  // From the Add page. One-click adds from "Find with AI" stay on the page.
+  const addProspects = (orgs: { name: string; website: string; note: string; discovery?: string }[], { stay = false } = {}) => {
+    const added = orgs.map<Prospect>(({ name, website, note, discovery }) => ({
       id: crypto.randomUUID(),
       campaignId,
       company: name,
       domain: website,
       note: note || undefined,
+      discovery,
       status: 'queued',
       progress: [],
       subject: '',
@@ -1492,10 +1511,140 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     const ids = added.map((p) => p.id)
     const apply = () => setProspects((ps) => [...ps.filter((p) => !ids.includes(p.id)), ...added])
     apply()
-    record(`Added ${added.length} to ${campaign.name}`, undefined, () => setProspects((ps) => ps.filter((p) => !ids.includes(p.id))), apply)
-    // Show the first one researching. New ones are queued, so only All lists them.
-    select(added[0].id)
+    record(
+      `Added ${added.length === 1 ? added[0].company : added.length} to ${campaign.name || 'this campaign'}`,
+      undefined,
+      () => {
+        // Don't keep researching something that's no longer there.
+        for (const id of ids) {
+          if (!researchJobs.current.has(id)) continue
+          dropped.current.add(id)
+          stopJob(researchJobs.current, id)
+        }
+        setProspects((ps) => ps.filter((p) => !ids.includes(p.id)))
+      },
+      apply,
+    )
+    // New ones are queued, so only All lists them.
     setFilter('all')
+    // Otherwise show the first one researching.
+    if (!stay) select(added[0].id)
+  }
+
+  // ---- Find with AI. Runs here rather than in the Add page, so a search
+  // carries on (and its results land) while you look at emails. ----
+  const discoveryJobs = useRef(new Map<string, string>()) // campaign id → job id
+  const viewRef = useRef(view)
+  viewRef.current = view
+  const campaignIdRef = useRef(campaign.id)
+  campaignIdRef.current = campaign.id
+
+  const updateDiscovery = (cid: string, fn: (d: Discovery) => Discovery) =>
+    setCampaigns((cs) => cs.map((c) => (c.id === cid ? { ...c, discovery: fn(c.discovery ?? { rounds: [], dismissed: [] }) } : c)))
+  const updateRound = (cid: string, rid: string, fn: (r: DiscoveryRound) => DiscoveryRound) =>
+    updateDiscovery(cid, (d) => ({ ...d, rounds: d.rounds.map((r) => (r.id === rid ? fn(r) : r)) }))
+
+  const openFind = (cid: string) => {
+    if (cid !== campaignIdRef.current) setCampaignId(cid)
+    setAddMode('find')
+    setView('add')
+  }
+
+  const discover = async (query: string) => {
+    const cid = campaign.id
+    if (discoveryJobs.current.has(cid) || !query.trim()) return
+    const d = campaign.discovery ?? { rounds: [], dismissed: [] }
+    // Everything already in the campaign, suggested or turned down.
+    const exclude = [...new Set([...inCampaign.map((p) => p.company), ...d.dismissed, ...d.rounds.flatMap((r) => r.candidates.map((c) => c.name))])]
+    const rid = crypto.randomUUID()
+    const jobId = crypto.randomUUID()
+    updateDiscovery(cid, (d) => ({ ...d, rounds: [...d.rounds, { id: rid, query: query.trim(), status: 'searching', steps: [], candidates: [] }] }))
+    discoveryJobs.current.set(cid, jobId)
+    // Organisations stream in as they're found, and come back again at the end.
+    const got = new Set(exclude.map(orgKey))
+    let found = 0
+    const addFound = (cands: Candidate[]) => {
+      const fresh = cands.filter((c) => !got.has(orgKey(c.name)))
+      if (!fresh.length) return
+      fresh.forEach((c) => got.add(orgKey(c.name)))
+      found += fresh.length
+      updateRound(cid, rid, (r) => ({ ...r, candidates: [...r.candidates, ...fresh] }))
+    }
+    jobs.current.set(jobId, (e) => {
+      if (e.kind === 'step') updateRound(cid, rid, (r) => ({ ...r, steps: [...r.steps, e.text] }))
+      if (e.kind === 'candidate') addFound([e.candidate])
+    })
+    const res = window.api
+      ? await window.api.claude.discover({ jobId, query: query.trim(), campaignNotes: campaignNotes(cid), exclude, earlier: d.rounds.map((r) => r.query) })
+      : ({ ok: false, error: 'Finding organisations runs in the Inroad desktop app.' } as const)
+    jobs.current.delete(jobId)
+    discoveryJobs.current.delete(cid)
+    if (res.ok) addFound(res.value)
+    const stopped = !res.ok && res.error === 'Stopped.'
+    updateRound(cid, rid, (r) => ({ ...r, status: res.ok ? 'done' : stopped ? 'stopped' : 'failed', error: res.ok || stopped ? undefined : res.error }))
+    // Say so if you've moved on from the page (or the campaign was deleted meanwhile).
+    const c = campaignsRef.current.find((c) => c.id === cid)
+    if (stopped || !c || (viewRef.current === 'add' && campaignIdRef.current === cid)) return
+    const name = c.name || 'this campaign'
+    notify({
+      text: !res.ok ? `Couldn’t finish finding organisations for ${name}` : found ? `Found ${found} for ${name}` : `Found nothing new for ${name}`,
+      action: { label: 'View', run: () => openFind(cid) },
+    })
+  }
+
+  // Suggestions not yet added or dismissed, for the sidebar.
+  const addedIds = Object.fromEntries(inCampaign.map((p) => [orgKey(p.company), p.id]))
+  const discoveryStatus = (() => {
+    const d = campaign.discovery
+    if (!d?.rounds.length || view === 'add') return undefined
+    const dismissed = new Set(d.dismissed.map(orgKey))
+    const count = d.rounds.flatMap((r) => r.candidates).filter((c) => !dismissed.has(orgKey(c.name)) && !addedIds[orgKey(c.name)]).length
+    const searching = discoveryJobs.current.has(campaign.id) || d.rounds.some((r) => r.status === 'searching')
+    return searching || count ? { searching, count } : undefined
+  })()
+
+  const stopDiscovery = () => {
+    const jobId = discoveryJobs.current.get(campaign.id)
+    if (jobId) void window.api?.claude.cancel(jobId)
+  }
+
+  // What research is told about why it was suggested.
+  const describeCandidate = (c: Candidate) =>
+    [c.why, ...c.sources.map((s) => (s.url ? `Source: ${s.title ? `${s.title} — ` : ''}${s.url}` : `Source: ${s.title}`))].join('\n')
+
+  const addCandidates = (cands: Candidate[]) => {
+    if (cands.length)
+      addProspects(
+        cands.map((c) => ({ name: c.name, website: c.website, note: '', discovery: describeCandidate(c) })),
+        { stay: true },
+      )
+  }
+
+  // Clears the suggestions for a fresh search (dismissed ones stay dismissed);
+  // undo brings them back.
+  const newSearch = () => {
+    const cid = campaign.id
+    const prev = campaign.discovery
+    if (!prev || discoveryJobs.current.has(cid)) return
+    const query = prev.rounds[0]?.query ?? ''
+    const clear = () => updateCampaign(cid, { discovery: { rounds: [], dismissed: prev.dismissed } })
+    clear()
+    setFindText(query)
+    record('Cleared the suggestions', undefined, () => updateCampaign(cid, { discovery: prev }), clear)
+  }
+
+  // Dismissed suggestions are hidden, and the agent is told not to suggest them again.
+  const setDismissed = (cid: string, name: string, on: boolean) =>
+    updateDiscovery(cid, (d) => ({ ...d, dismissed: on ? [...d.dismissed.filter((n) => n !== name), name] : d.dismissed.filter((n) => n !== name) }))
+  const dismissCandidate = (name: string, on = true) => {
+    const cid = campaign.id
+    setDismissed(cid, name, on)
+    record(
+      `${on ? 'Dismissed' : 'Restored'} ${name}`,
+      undefined,
+      () => setDismissed(cid, name, !on),
+      () => setDismissed(cid, name, on),
+    )
   }
 
   // A suggestion as Claude will see it in the transcript of earlier turns.
@@ -1548,7 +1697,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
     if (!window.api) return setReply((m) => ({ ...m, pending: false, error: true, text: 'Chat runs in the Inroad desktop app.' }))
 
     const jobId = crypto.randomUUID()
-    jobs.current.set(jobId, (e) => setReply((m) => (e.kind === 'delta' ? { ...m, text: m.text + e.text } : { ...m, step: e.text })))
+    jobs.current.set(jobId, (e) => e.kind !== 'candidate' && setReply((m) => (e.kind === 'delta' ? { ...m, text: m.text + e.text } : { ...m, step: e.text })))
     chatJobs.current.set(chatId, jobId)
     const res = await window.api.claude.chat({
       jobId,
@@ -1607,6 +1756,7 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
 
   const startFresh = () => {
     const fresh = firstRun()
+    discoveryJobs.current.forEach((jobId) => void window.api?.claude.cancel(jobId))
     Object.values(commitTimers.current).forEach(clearTimeout)
     commitTimers.current = {}
     undoStack.current = []
@@ -1784,6 +1934,8 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
               selectedId={selectedId}
               onSelect={select}
               onAdd={() => openAdd()}
+              discovery={discoveryStatus}
+              onOpenDiscovery={() => openFind(campaign.id)}
               onDeleteProspect={deleteProspect}
               filter={filter}
               onFilter={setFilter}
@@ -1817,6 +1969,20 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
                   onAdd={addProspects}
                   onCancel={() => setView('email')}
                   onResearchOnly={(researchOnly) => updateCampaign(campaign.id, { researchOnly })}
+                  mode={addMode}
+                  onMode={setAddMode}
+                  find={{
+                    discovery: campaign.discovery,
+                    addedIds,
+                    text: findText,
+                    onText: setFindText,
+                    onDiscover: (q) => void discover(q),
+                    onStop: stopDiscovery,
+                    onAdd: addCandidates,
+                    onDismiss: dismissCandidate,
+                    onOpen: select,
+                    onNewSearch: newSearch,
+                  }}
                 />
               ) : rightDocks && selected && view === 'email' ? (
                 <ResizablePanelGroup

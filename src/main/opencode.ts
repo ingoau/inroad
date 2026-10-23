@@ -3,10 +3,12 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { z } from 'zod'
 import type {
+  Candidate,
   ChatRequest,
   ChatResult,
   ClaudeProgress,
   DraftRequest,
+  DiscoverRequest,
   DraftResult,
   EmailComment,
   EmailGuidance,
@@ -23,6 +25,7 @@ import type {
   VoiceLearnResult,
   WritingRulesRequest,
 } from '../shared/api'
+import { orgKey } from '../shared/org'
 import type { AiConfig } from './settings'
 
 // Runs Inroad's agent tasks through the opencode CLI instead of the Claude
@@ -299,10 +302,19 @@ function guidanceSections(req: EmailGuidance & { company: string }) {
   ].filter(Boolean)
 }
 
+// What "Find with AI" found when it suggested the organisation: a lead to check.
+function discoverySection(discovery?: string) {
+  return discovery?.trim()
+    ? [`<found_when_suggested>\nWhy this organisation was suggested (check it rather than taking it as given):\n${discovery.trim()}\n</found_when_suggested>`]
+    : []
+}
+
 const GUIDANCE_RULE = `If there's an email format, follow its structure and include everything it asks for. If the user gave instructions for this organisation, follow them exactly; they override the campaign notes, the format and your own judgement where they conflict.`
 
 const ResearchOnlySchema = z.object({
-  research_notes: z.string().describe('Everything useful you found, each fact with its source URL. Kept so the email can be written later without searching again.'),
+  research_notes: z
+    .string()
+    .describe('Everything useful you found, each fact with its source URL. Kept so the email can be written later without searching again.'),
   brief: BriefSchema,
 })
 
@@ -351,6 +363,7 @@ export async function researchAndDraft(cfg: OpencodeConfig, req: ResearchRequest
       withDraft ? RESEARCH_SYSTEM : RESEARCH_ONLY_SYSTEM,
       `<campaign_notes>\n${req.campaignNotes || '(none)'}\n</campaign_notes>`,
       ...guidanceSections(req),
+      ...discoverySection(req.discovery),
       voiceSection(req.voice),
       `<sender>${req.senderName || 'the user'}</sender>`,
       `Organisation: ${req.company}${req.website ? ` (website: ${req.website})` : ''}`,
@@ -625,6 +638,61 @@ For each, keep any website they gave, and put everything they said about it in "
     ].join('\n\n')
     const out = parseJson(OrganisationsSchema, await run(utility(cfg), prompt + withJsonSchema(OrganisationsSchema)))
     return out.organisations.map((o) => ({ name: o.name.trim(), website: o.website.trim(), note: o.note.trim() })).filter((o) => o.name)
+  })
+}
+
+// ------------------------------------------------ finding organisations
+
+const DiscoverSchema = z.object({
+  organisations: z.array(
+    z.object({
+      name: z.string().describe('The organisation’s name, as you’d search for it.'),
+      website: z.string().describe('Its main website (domain or URL), or "" if you didn’t find one.'),
+      why: z
+        .string()
+        .describe('One short sentence, specific to this campaign: why they’d say yes. Name the evidence, e.g. "Sponsored UNIHACK 2025 with prizes".'),
+      fit: z.enum(['strong', 'possible']).describe('strong: clear evidence they do this kind of thing. possible: a plausible fit without direct evidence.'),
+      sources: z.array(z.object({ title: z.string(), url: z.string() })).describe('The pages the evidence came from.'),
+    }),
+  ),
+})
+
+// opencode can't call Inroad's own tools, so the organisations arrive together
+// at the end rather than one at a time.
+export async function discover(cfg: OpencodeConfig, req: DiscoverRequest, emit: Emit, abort?: AbortController): Promise<Result<Candidate[]>> {
+  return guard(async () => {
+    emit({ jobId: req.jobId, kind: 'step', text: 'Reading the campaign' })
+    const prompt = [
+      `You find organisations for the user to reach out to. The campaign notes say what the user is asking for (sponsorship, a venue, a partnership…) and the user's query says who they're after. Find real organisations that are likely to say yes.
+
+Search the web for evidence: who has done this before for similar events or causes (sponsor lists, past partners, announcements), and who fits what the campaign asks for. Only read pages; never submit a form, post, sign up or change anything. Aim for about 10 unless the query asks for a different number. Prefer fewer good suggestions over padding: leave out anything that clearly doesn't fit. Never suggest an organisation from the exclude list.`,
+      `<campaign_notes>\n${req.campaignNotes || '(none)'}\n</campaign_notes>`,
+      req.exclude.length ? `<exclude>\n${req.exclude.join('\n')}\n</exclude>` : '',
+      req.earlier.length ? `<earlier_queries>\n${req.earlier.join('\n')}\n</earlier_queries>\nThe query below follows on from these.` : '',
+      `Query: ${req.query}`,
+    ]
+      .filter(Boolean)
+      .join('\n\n')
+    const text = await run(
+      cfg,
+      prompt + withJsonSchema(DiscoverSchema),
+      {
+        onTool: (tool, input) => {
+          const step = describeTool(tool, input)
+          if (step) emit({ jobId: req.jobId, kind: 'step', text: step })
+        },
+      },
+      abort?.signal,
+    )
+    const seen = new Set(req.exclude.map(orgKey))
+    const found: Candidate[] = []
+    for (const o of parseJson(DiscoverSchema, text).organisations) {
+      const key = orgKey(o.name)
+      if (!key || seen.has(key)) continue
+      seen.add(key)
+      found.push({ name: o.name.trim(), website: o.website.trim(), why: o.why.trim(), fit: o.fit, sources: o.sources })
+    }
+    return found
   })
 }
 

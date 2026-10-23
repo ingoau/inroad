@@ -3,7 +3,7 @@ import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuShortcut, 
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Sidebar, SidebarContent, SidebarFooter, SidebarHeader, useSidebar } from '@/components/ui/sidebar'
 import { cn } from '@/lib/utils'
-import { Trash2 } from 'lucide-react'
+import { Loader2, Sparkles, Trash2 } from 'lucide-react'
 import { useEffect } from 'react'
 import { hasEmail, type Campaign, type Folder, type Prospect, type Voice } from '../data'
 import { Shortcut } from './hint'
@@ -44,6 +44,10 @@ interface Props {
   selectedId: string
   onSelect: (id: string) => void
   onAdd: () => void
+  // "Find with AI" for this campaign, while it's searching or has suggestions
+  // left to look at. Hidden on the Add page itself.
+  discovery?: { searching: boolean; count: number }
+  onOpenDiscovery: () => void
   onDeleteProspect: (id: string) => void
   filter: Filter
   onFilter: (f: Filter) => void
@@ -141,6 +145,20 @@ export function AppSidebar(props: Props) {
         {!props.mailReady && (
           <button onClick={props.onConnectMail} className="text-left text-mark-text hover:underline">
             Connect your mailbox
+          </button>
+        )}
+        {props.discovery && (
+          <button
+            onClick={props.onOpenDiscovery}
+            className="-mx-2 mb-1 flex items-center gap-2 rounded-lg bg-muted/60 px-2 py-1.5 text-left text-[13px] transition-colors hover:bg-muted"
+          >
+            {props.discovery.searching ? (
+              <Loader2 className="size-3.5 animate-spin text-muted-foreground" />
+            ) : (
+              <Sparkles className="size-3.5 text-muted-foreground" />
+            )}
+            {props.discovery.searching ? 'Finding organisations' : 'Suggestions'}
+            {props.discovery.count > 0 && <span className="ml-auto text-muted-foreground">{props.discovery.count} new</span>}
           </button>
         )}
         <button onClick={props.onAdd} className="text-left text-muted-foreground hover:text-foreground">
