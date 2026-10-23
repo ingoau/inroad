@@ -1574,7 +1574,12 @@ export default function App({ saved: loaded }: { saved: SavedState }) {
       if (!fresh.length) return
       fresh.forEach((c) => got.add(orgKey(c.name)))
       found += fresh.length
-      updateRound(cid, rid, (r) => ({ ...r, candidates: [...r.candidates, ...fresh] }))
+      // Skipping any in other rounds too: undoing "New search" can bring some back mid-search.
+      updateDiscovery(cid, (d) => {
+        const other = new Set(d.rounds.filter((r) => r.id !== rid).flatMap((r) => r.candidates.map((c) => orgKey(c.name))))
+        const add = fresh.filter((c) => !other.has(orgKey(c.name)))
+        return { ...d, rounds: d.rounds.map((r) => (r.id === rid ? { ...r, candidates: [...r.candidates, ...add] } : r)) }
+      })
     }
     jobs.current.set(jobId, (e) => {
       if (e.kind === 'step') updateRound(cid, rid, (r) => ({ ...r, steps: [...r.steps, e.text] }))
