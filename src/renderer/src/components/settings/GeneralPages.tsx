@@ -139,6 +139,15 @@ export function MailboxForm({ settings, onSaved }: { settings: PublicSettings | 
             placeholder="you@example.com"
           />
         </SettingsRow>
+        <SettingsRow title="Bcc" description="Added to every draft, e.g. your CRM’s logging address. Separate several with commas." htmlFor="bcc">
+          <Input
+            id="bcc"
+            className="w-64"
+            value={mail.bcc ?? ''}
+            onChange={(e) => setMail({ ...mail, bcc: e.target.value })}
+            placeholder="Optional"
+          />
+        </SettingsRow>
       </SettingsSection>
 
       <SettingsSection title="Server">

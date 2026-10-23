@@ -186,6 +186,8 @@ export interface MailSettings {
   user: string
   fromName: string
   fromEmail: string
+  // Added as Bcc to every draft, e.g. a CRM's logging address. Comma-separated; empty for none.
+  bcc?: string
 }
 
 // Which agent backend Inroad runs.
